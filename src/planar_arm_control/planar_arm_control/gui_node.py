@@ -21,13 +21,14 @@ You may reuse the look and feel of a standard PyQtGraph arm plot; the point of
 this task is the ROS 2 integration, not pixel-perfect styling.
 """
 
-import sys
+import threading
 
 import rclpy
 from rclpy.node import Node
+from sensor_msgs.msg import JointState
 
-from PyQt5 import QtWidgets  # noqa: F401  (import here so missing deps fail loudly)
-import pyqtgraph as pg  # noqa: F401
+from PyQt5 import QtCore, QtWidgets
+import pyqtgraph as pg
 
 from planar_arm_control.planar_arm import PlanarArm
 
@@ -35,26 +36,41 @@ LINK_LENGTHS = [3.0, 2.0, 1.5]
 
 
 class GuiNode(Node):
-    def __init__(self):
+    def __init__(self, view):
         super().__init__("gui_node")
+        self.create_subscription(JointState, "joint_states",
+                                 lambda msg: view.joints.emit(list(msg.position)), 10)
+
+
+class ArmView(pg.PlotWidget):
+    # Emitted on the ROS thread; Qt delivers it on the GUI thread.
+    joints = QtCore.pyqtSignal(list)
+
+    def __init__(self):
+        super().__init__(background="w")
         self.arm = PlanarArm(LINK_LENGTHS)
-        # TODO: create subscription to /joint_states, service client / publisher
-        #       for targets, and hand data to the Qt window.
-        self.get_logger().info("gui_node started (stub — implement me).")
+        self.joints.connect(self.show_joints)
+        self.setAspectLocked(True)
+        self.setRange(xRange=(-7, 7), yRange=(-1, 7))
+        self.addItem(pg.LinearRegionItem(values=(-2, 0), orientation="horizontal", movable=False,
+                                         brush=(200, 200, 200, 150)))
+        dark = (60, 60, 60)
+        self.links = self.plot(pen=pg.mkPen(dark, width=8), symbol="o", symbolSize=12,
+                               symbolBrush="w", symbolPen=pg.mkPen(dark, width=2))
+
+    def show_joints(self, q):
+        points = self.arm.forward_kinematics(q)
+        self.links.setData([p[0] for p in points], [p[1] for p in points])
 
 
 def main(args=None):
     rclpy.init(args=args)
-    # TODO: build the QApplication + main window, wire it to GuiNode, and run
-    #       the Qt loop and the ROS 2 executor together.
-    node = GuiNode()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
+    app = QtWidgets.QApplication([])
+    view = ArmView()
+    view.show()
+    threading.Thread(target=rclpy.spin, args=(GuiNode(view),)).start()
+    app.exec_()
+    rclpy.try_shutdown()
 
 
 if __name__ == "__main__":
