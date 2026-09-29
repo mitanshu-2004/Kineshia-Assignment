@@ -55,6 +55,11 @@ class ControllerNode(Node):
         self.create_subscription(PointStamped, "target_pose", self.on_target, 10)
 
     def on_target(self, msg):
+        if self.move is not None:
+            _, _, t0, duration = self.move
+            if time.monotonic() - t0 < duration:
+                self.get_logger().info("busy: finishing the current move, target ignored")
+                return
         # Start the search from the current pose, so IK picks the closest solution.
         goal = self.arm.inverse_kinematics([msg.point.x, msg.point.y], initial_guess=self.q)
         travel = max(abs(b - a) for a, b in zip(self.q, goal))
