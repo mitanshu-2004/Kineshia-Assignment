@@ -16,6 +16,7 @@
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>planar_arm_msgs</exec_depend>
   <!-- PyQt5 and pyqtgraph are pip/apt dependencies; see README. -->
 
   <test_depend>ament_copyright</test_depend>

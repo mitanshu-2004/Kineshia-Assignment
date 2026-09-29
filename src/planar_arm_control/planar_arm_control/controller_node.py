@@ -29,12 +29,12 @@ import math
 import time
 
 import rclpy
-from geometry_msgs.msg import PointStamped
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 
 # The provided kinematics library — do not modify it.
 from planar_arm_control.planar_arm import PlanarArm
+from planar_arm_msgs.srv import MoveToTarget
 
 LINK_LENGTHS = [3.0, 2.0, 1.5]
 HOME = [math.pi / 2, 0.0, 0.0]  # pointing straight up
@@ -53,37 +53,43 @@ class ControllerNode(Node):
         self.move = None
         self.joint_pub = self.create_publisher(JointState, "joint_states", 10)
         self.create_timer(1.0 / rate, self.tick)
-        self.create_subscription(PointStamped, "target_pose", self.on_target, 10)
+        self.create_service(MoveToTarget, "move_to_target", self.on_move)
 
-    def on_target(self, msg):
+    def on_move(self, request, response):
         if self.move is not None:
             _, _, t0, duration = self.move
             if time.monotonic() - t0 < duration:
-                self.get_logger().info("busy: finishing the current move, target ignored")
-                return
-        x, y = msg.point.x, msg.point.y
+                response.message = "busy: finishing the current move"
+                return response
+        x, y = request.x, request.y
         if y < 0:
-            self.get_logger().info(f"refused: ({x:.2f}, {y:.2f}) is below the ground")
-            return
+            response.message = f"refused: ({x:.2f}, {y:.2f}) is below the ground"
+            return response
         target = self.arm.reachable_target([x, y])  # the library's projection of points beyond reach
         # Start the search from the current pose, so IK picks the closest solution.
         goal = self.arm.inverse_kinematics(target, initial_guess=self.q)
         # The library's fallback IK checks neither the limits nor the ground, and may miss the target.
         reached = math.dist(self.arm.end_effector(goal), target) < GOAL_TOLERANCE
         if not (reached and self.arm.within_joint_limits(goal) and self.arm.arm_above_base(goal)):
-            self.get_logger().info(f"refused: the library's IK gave no valid pose for ({x:.2f}, {y:.2f})")
-            return
+            response.message = f"refused: the library's IK gave no valid pose for ({x:.2f}, {y:.2f})"
+            return response
         travel = max(abs(b - a) for a, b in zip(self.q, goal))
         # A straight joint-space line between two valid poses can still dip below the ground.
         steps = int(math.degrees(travel)) + 2
         for i in range(steps):
             s = i / (steps - 1)
             if not self.arm.arm_above_base([a + (b - a) * s for a, b in zip(self.q, goal)]):
-                self.get_logger().info("refused: the path would pass below the ground")
-                return
+                response.message = "refused: the path would pass below the ground"
+                return response
         # The quintic peaks at 1.875 * travel / T in speed and 5.774 * travel / T^2 in acceleration.
         duration = max(1.875 * travel / MAX_SPEED, math.sqrt(5.774 * travel / MAX_ACCEL), MIN_MOVE_TIME)
         self.move = (list(self.q), goal, time.monotonic(), duration)
+        response.accepted = True
+        response.goal_x, response.goal_y = float(target[0]), float(target[1])
+        response.message = f"moving to ({target[0]:.2f}, {target[1]:.2f})"
+        if math.hypot(x, y) > sum(LINK_LENGTHS):
+            response.message = f"({x:.2f}, {y:.2f}) is out of reach, " + response.message
+        return response
 
     def tick(self):
         if self.move is not None:
