@@ -62,6 +62,8 @@ class ControllerNode(Node):
             start, goal, t0 = self.move
             # Fraction of the move done, from the time passed since it started.
             s = min((time.monotonic() - t0) / MOVE_TIME, 1.0)
+            # Quintic: zero speed and acceleration at both ends, so the arm eases in and out.
+            s = 10 * s**3 - 15 * s**4 + 6 * s**5
             self.q = [a + (b - a) * s for a, b in zip(start, goal)]
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
