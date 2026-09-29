@@ -26,6 +26,7 @@ pick-and-place with feedback/cancel.
 """
 
 import math
+import time
 
 import rclpy
 from geometry_msgs.msg import PointStamped
@@ -37,6 +38,7 @@ from planar_arm_control.planar_arm import PlanarArm
 
 LINK_LENGTHS = [3.0, 2.0, 1.5]
 HOME = [math.pi / 2, 0.0, 0.0]  # pointing straight up
+MOVE_TIME = 2.0  # seconds per move
 
 
 class ControllerNode(Node):
@@ -45,15 +47,22 @@ class ControllerNode(Node):
         self.arm = PlanarArm(LINK_LENGTHS)
         rate = self.declare_parameter("publish_rate_hz", 50.0).value
         self.q = list(HOME)
+        self.move = None
         self.joint_pub = self.create_publisher(JointState, "joint_states", 10)
-        self.create_timer(1.0 / rate, self.publish_joints)
+        self.create_timer(1.0 / rate, self.tick)
         self.create_subscription(PointStamped, "target_pose", self.on_target, 10)
 
     def on_target(self, msg):
         # Start the search from the current pose, so IK picks the closest solution.
-        self.q = self.arm.inverse_kinematics([msg.point.x, msg.point.y], initial_guess=self.q)
+        goal = self.arm.inverse_kinematics([msg.point.x, msg.point.y], initial_guess=self.q)
+        self.move = (list(self.q), goal, time.monotonic())
 
-    def publish_joints(self):
+    def tick(self):
+        if self.move is not None:
+            start, goal, t0 = self.move
+            # Fraction of the move done, from the time passed since it started.
+            s = min((time.monotonic() - t0) / MOVE_TIME, 1.0)
+            self.q = [a + (b - a) * s for a, b in zip(start, goal)]
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.name = ["joint1", "joint2", "joint3"]
@@ -70,7 +79,7 @@ def main(args=None):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
 
 if __name__ == "__main__":
