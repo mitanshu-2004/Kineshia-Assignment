@@ -38,7 +38,9 @@ from planar_arm_control.planar_arm import PlanarArm
 
 LINK_LENGTHS = [3.0, 2.0, 1.5]
 HOME = [math.pi / 2, 0.0, 0.0]  # pointing straight up
-MOVE_TIME = 2.0  # seconds per move
+MAX_SPEED = math.radians(60.0)  # per joint
+MAX_ACCEL = math.radians(120.0)
+MIN_MOVE_TIME = 0.5  # also avoids dividing by zero on a zero-length move
 
 
 class ControllerNode(Node):
@@ -55,13 +57,16 @@ class ControllerNode(Node):
     def on_target(self, msg):
         # Start the search from the current pose, so IK picks the closest solution.
         goal = self.arm.inverse_kinematics([msg.point.x, msg.point.y], initial_guess=self.q)
-        self.move = (list(self.q), goal, time.monotonic())
+        travel = max(abs(b - a) for a, b in zip(self.q, goal))
+        # The quintic peaks at 1.875 * travel / T in speed and 5.774 * travel / T^2 in acceleration.
+        duration = max(1.875 * travel / MAX_SPEED, math.sqrt(5.774 * travel / MAX_ACCEL), MIN_MOVE_TIME)
+        self.move = (list(self.q), goal, time.monotonic(), duration)
 
     def tick(self):
         if self.move is not None:
-            start, goal, t0 = self.move
+            start, goal, t0, duration = self.move
             # Fraction of the move done, from the time passed since it started.
-            s = min((time.monotonic() - t0) / MOVE_TIME, 1.0)
+            s = min((time.monotonic() - t0) / duration, 1.0)
             # Quintic: zero speed and acceleration at both ends, so the arm eases in and out.
             s = 10 * s**3 - 15 * s**4 + 6 * s**5
             self.q = [a + (b - a) * s for a, b in zip(start, goal)]
