@@ -28,6 +28,7 @@ pick-and-place with feedback/cancel.
 import math
 
 import rclpy
+from geometry_msgs.msg import PointStamped
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 
@@ -46,6 +47,11 @@ class ControllerNode(Node):
         self.q = list(HOME)
         self.joint_pub = self.create_publisher(JointState, "joint_states", 10)
         self.create_timer(1.0 / rate, self.publish_joints)
+        self.create_subscription(PointStamped, "target_pose", self.on_target, 10)
+
+    def on_target(self, msg):
+        # Start the search from the current pose, so IK picks the closest solution.
+        self.q = self.arm.inverse_kinematics([msg.point.x, msg.point.y], initial_guess=self.q)
 
     def publish_joints(self):
         msg = JointState()
