@@ -25,21 +25,34 @@ trajectory-tracking loop with an error signal, a ROS 2 action for the full
 pick-and-place with feedback/cancel.
 """
 
+import math
+
 import rclpy
 from rclpy.node import Node
+from sensor_msgs.msg import JointState
 
 # The provided kinematics library — do not modify it.
 from planar_arm_control.planar_arm import PlanarArm
 
 LINK_LENGTHS = [3.0, 2.0, 1.5]
+HOME = [math.pi / 2, 0.0, 0.0]  # pointing straight up
 
 
 class ControllerNode(Node):
     def __init__(self):
         super().__init__("controller_node")
         self.arm = PlanarArm(LINK_LENGTHS)
-        # TODO: declare parameters, create publishers/services, timers, state.
-        self.get_logger().info("controller_node started (stub — implement me).")
+        rate = self.declare_parameter("publish_rate_hz", 50.0).value
+        self.q = list(HOME)
+        self.joint_pub = self.create_publisher(JointState, "joint_states", 10)
+        self.create_timer(1.0 / rate, self.publish_joints)
+
+    def publish_joints(self):
+        msg = JointState()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.name = ["joint1", "joint2", "joint3"]
+        msg.position = self.q
+        self.joint_pub.publish(msg)
 
 
 def main(args=None):
