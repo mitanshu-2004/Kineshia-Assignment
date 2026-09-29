@@ -41,6 +41,7 @@ HOME = [math.pi / 2, 0.0, 0.0]  # pointing straight up
 MAX_SPEED = math.radians(60.0)  # per joint
 MAX_ACCEL = math.radians(120.0)
 MIN_MOVE_TIME = 0.5  # also avoids dividing by zero on a zero-length move
+GOAL_TOLERANCE = 1e-3  # the IK answer must put the tool within 1 mm of the target
 
 
 class ControllerNode(Node):
@@ -60,8 +61,18 @@ class ControllerNode(Node):
             if time.monotonic() - t0 < duration:
                 self.get_logger().info("busy: finishing the current move, target ignored")
                 return
+        x, y = msg.point.x, msg.point.y
+        if y < 0:
+            self.get_logger().info(f"refused: ({x:.2f}, {y:.2f}) is below the ground")
+            return
+        target = self.arm.reachable_target([x, y])  # the library's projection of points beyond reach
         # Start the search from the current pose, so IK picks the closest solution.
-        goal = self.arm.inverse_kinematics([msg.point.x, msg.point.y], initial_guess=self.q)
+        goal = self.arm.inverse_kinematics(target, initial_guess=self.q)
+        # The library's fallback IK checks neither the limits nor the ground, and may miss the target.
+        reached = math.dist(self.arm.end_effector(goal), target) < GOAL_TOLERANCE
+        if not (reached and self.arm.within_joint_limits(goal) and self.arm.arm_above_base(goal)):
+            self.get_logger().info(f"refused: the library's IK gave no valid pose for ({x:.2f}, {y:.2f})")
+            return
         travel = max(abs(b - a) for a, b in zip(self.q, goal))
         # The quintic peaks at 1.875 * travel / T in speed and 5.774 * travel / T^2 in acceleration.
         duration = max(1.875 * travel / MAX_SPEED, math.sqrt(5.774 * travel / MAX_ACCEL), MIN_MOVE_TIME)
