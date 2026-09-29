@@ -2,7 +2,7 @@
 <package format="3">
   <name>planar_arm_msgs</name>
   <version>0.1.0</version>
-  <description>Service definitions for the planar arm controller and GUI.</description>
+  <description>Service and message definitions for the planar arm controller and GUI.</description>
   <maintainer email="mitanshug2004@gmail.com">Mitanshu Goel</maintainer>
   <license>Proprietary — for evaluation use only</license>
 

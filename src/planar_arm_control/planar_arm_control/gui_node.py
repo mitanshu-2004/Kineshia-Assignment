@@ -28,6 +28,7 @@ import time
 from collections import deque
 
 import rclpy
+from rclpy.qos import DurabilityPolicy, QoSProfile
 from rclpy.signals import SignalHandlerOptions
 from sensor_msgs.msg import JointState
 
@@ -35,17 +36,27 @@ from PyQt5 import QtCore, QtWidgets
 import pyqtgraph as pg
 
 from planar_arm_control.planar_arm import PlanarArm
-from planar_arm_msgs.srv import MoveToTarget
+from planar_arm_msgs.msg import ArmStatus
+from planar_arm_msgs.srv import MoveToTarget, PickPlace
 
 LINK_LENGTHS = [3.0, 2.0, 1.5]
+REACH = sum(LINK_LENGTHS)
 HISTORY_S = 10.0  # seconds of joint angles in the plot
 STALE_S = 0.5  # no joint state for this long means the controller is gone
+
+
+def number_box(value):
+    box = QtWidgets.QDoubleSpinBox()
+    box.setRange(-10.0, 10.0)
+    box.setValue(value)
+    return box
 
 
 class Window(QtWidgets.QWidget):
     # Emitted on the ROS thread; Qt delivers them on the GUI thread.
     joints = QtCore.pyqtSignal(float, list)
-    reply = QtCore.pyqtSignal(object)
+    status = QtCore.pyqtSignal(str, bool)
+    reply = QtCore.pyqtSignal(object, object)
 
     def __init__(self, node):
         super().__init__()
@@ -53,11 +64,19 @@ class Window(QtWidgets.QWidget):
         self.arm = PlanarArm(LINK_LENGTHS)
         self.history = deque()
         self.last_data = -math.inf
+        self.idle = False
+        self.holding = False
         self.joints.connect(self.on_joints)
+        self.status.connect(self.on_status)
         self.reply.connect(self.on_reply)
         node.create_subscription(JointState, "joint_states", lambda msg: self.joints.emit(
             msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9, list(msg.position)), 10)
-        self.client = node.create_client(MoveToTarget, "move_to_target")
+        # Transient local, like the publisher, so the current status arrives even if the GUI starts later.
+        latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        node.create_subscription(ArmStatus, "arm_status", lambda msg: self.status.emit(msg.phase, msg.holding),
+                                 latched)
+        self.move_client = node.create_client(MoveToTarget, "move_to_target")
+        self.pick_place_client = node.create_client(PickPlace, "pick_place")
 
         view = pg.PlotWidget(background="w")
         view.setAspectLocked(True)
@@ -67,11 +86,12 @@ class Window(QtWidgets.QWidget):
         view.plot([-100, 100], [0, 0], pen=pg.mkPen(dark, width=2), fillLevel=-100, brush=(220, 220, 220))
         # The arm's reach: anything outside this dashed arc is out of reach.
         arc = [i * math.pi / 100 for i in range(101)]
-        view.plot([sum(LINK_LENGTHS) * math.cos(a) for a in arc], [sum(LINK_LENGTHS) * math.sin(a) for a in arc],
+        view.plot([REACH * math.cos(a) for a in arc], [REACH * math.sin(a) for a in arc],
                   pen=pg.mkPen((150, 150, 150), style=QtCore.Qt.DashLine))
+        self.block = view.plot(pen=None, symbol="s", symbolSize=18, symbolBrush=(230, 160, 40))
         self.links = view.plot(pen=pg.mkPen(dark, width=8), symbol="o", symbolSize=12,
                                symbolBrush="w", symbolPen=pg.mkPen(dark, width=2))
-        # Follows the target boxes, so the target is visible before it is sent.
+        # Follows the move boxes, so the target is visible before it is sent.
         self.target = view.plot(pen=None, symbolSize=16)
         angles = pg.PlotWidget(background="w", title="Joint angles (deg)")
         angles.setLabel("bottom", "seconds ago")
@@ -84,24 +104,35 @@ class Window(QtWidgets.QWidget):
             plot.hideButtons()
         self.tool_label = QtWidgets.QLabel()
         self.connection_label = QtWidgets.QLabel()
+        self.status_label = QtWidgets.QLabel()
         self.reply_label = QtWidgets.QLabel()
         self.reply_label.setWordWrap(True)
-        # Filled in with the out-of-reach test case.
-        self.x_box, self.y_box = QtWidgets.QDoubleSpinBox(), QtWidgets.QDoubleSpinBox()
-        for box, value in ((self.x_box, 7.0), (self.y_box, 3.0)):
-            box.setRange(-10.0, 10.0)
-            box.setValue(value)
+
+        # Filled in with the test scenario: the out-of-reach move, then the pick and place.
+        self.move_x, self.move_y = number_box(7.0), number_box(3.0)
+        self.pick_x, self.pick_y = number_box(4.0), number_box(2.0)
+        self.place_x, self.place_y = number_box(-3.0), number_box(3.0)
+        for box in (self.move_x, self.move_y):
             box.valueChanged.connect(self.show_target)
         self.show_target()
         self.move_button = QtWidgets.QPushButton("Move")
-        self.move_button.clicked.connect(self.send_move)
+        self.move_button.clicked.connect(lambda: self.send(self.move_client, MoveToTarget.Request(
+            x=self.move_x.value(), y=self.move_y.value())))
+        self.pick_place_button = QtWidgets.QPushButton("Pick && Place")
+        self.pick_place_button.clicked.connect(lambda: self.send(self.pick_place_client, PickPlace.Request(
+            pick_x=self.pick_x.value(), pick_y=self.pick_y.value(),
+            place_x=self.place_x.value(), place_y=self.place_y.value())))
 
-        controls = QtWidgets.QHBoxLayout()
-        for widget in (QtWidgets.QLabel("x"), self.x_box, QtWidgets.QLabel("y"), self.y_box, self.move_button):
-            controls.addWidget(widget)
-        controls.addStretch()
+        controls = QtWidgets.QGridLayout()
+        for row, widgets in enumerate([
+                (QtWidgets.QLabel("Move to"), self.move_x, self.move_y, self.move_button),
+                (QtWidgets.QLabel("Pick at"), self.pick_x, self.pick_y),
+                (QtWidgets.QLabel("Place at"), self.place_x, self.place_y, self.pick_place_button)]):
+            for column, widget in enumerate(widgets):
+                controls.addWidget(widget, row, column)
+        controls.setColumnStretch(4, 1)
         side = QtWidgets.QVBoxLayout()
-        for widget in (angles, self.tool_label, self.connection_label, self.reply_label):
+        for widget in (angles, self.tool_label, self.connection_label, self.status_label, self.reply_label):
             side.addWidget(widget)
         side.addLayout(controls)
         layout = QtWidgets.QHBoxLayout(self)
@@ -117,34 +148,46 @@ class Window(QtWidgets.QWidget):
         self.last_data = time.monotonic()
         points = self.arm.forward_kinematics(q)
         self.links.setData([p[0] for p in points], [p[1] for p in points])
-        self.tool_label.setText(f"tool: x {points[-1][0]:.3f}   y {points[-1][1]:.3f}")
+        x, y = points[-1]
+        self.tool_label.setText(f"tool: x {x:.3f}   y {y:.3f}")
+        if self.holding:
+            self.block.setData([x], [y])
         self.history.append((stamp, [math.degrees(a) for a in q]))
         while self.history[0][0] < stamp - HISTORY_S:
             self.history.popleft()
         for i, curve in enumerate(self.curves):
             curve.setData([t - stamp for t, _ in self.history], [a[i] for _, a in self.history])
 
+    def on_status(self, phase, holding):
+        self.idle = phase == "idle"
+        self.holding = holding
+        self.status_label.setText(f"phase: {phase}   holding: {'yes' if holding else 'no'}")
+        self.check_health()
+
     def check_health(self):
         fresh = time.monotonic() - self.last_data < STALE_S
         self.connection_label.setText("controller: connected" if fresh else "controller: no data")
-        self.move_button.setEnabled(fresh)
+        for button in (self.move_button, self.pick_place_button):
+            button.setEnabled(fresh and self.idle)
 
     def show_target(self):
-        x, y = self.x_box.value(), self.y_box.value()
+        x, y = self.move_x.value(), self.move_y.value()
         # ○ above the ground and within reach; ✕ where the arm cannot go as given.
-        valid = y >= 0 and math.hypot(x, y) <= sum(LINK_LENGTHS)
+        valid = y >= 0 and math.hypot(x, y) <= REACH
         colour = (40, 160, 60) if valid else (220, 40, 40)
         self.target.setData([x], [y], symbol="o" if valid else "x", symbolPen=pg.mkPen(colour, width=2),
                             symbolBrush=(0, 0, 0, 0) if valid else colour)
 
-    def send_move(self):
-        request = MoveToTarget.Request(x=self.x_box.value(), y=self.y_box.value())
+    def send(self, client, request):
         # call_async returns at once; the reply arrives on the ROS thread and goes out as a signal.
-        self.client.call_async(request).add_done_callback(lambda future: self.reply.emit(future.result()))
+        client.call_async(request).add_done_callback(lambda future: self.reply.emit(request, future.result()))
 
-    def on_reply(self, response):
+    def on_reply(self, request, response):
         self.reply_label.setText(response.message)
         self.reply_label.setStyleSheet("" if response.accepted else "color: red")
+        if response.accepted and isinstance(request, PickPlace.Request):
+            # The block waits at the pick point until the arm picks it up.
+            self.block.setData([request.pick_x], [request.pick_y])
 
 
 def main(args=None):
