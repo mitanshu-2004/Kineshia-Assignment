@@ -74,6 +74,13 @@ class ControllerNode(Node):
             self.get_logger().info(f"refused: the library's IK gave no valid pose for ({x:.2f}, {y:.2f})")
             return
         travel = max(abs(b - a) for a, b in zip(self.q, goal))
+        # A straight joint-space line between two valid poses can still dip below the ground.
+        steps = int(math.degrees(travel)) + 2
+        for i in range(steps):
+            s = i / (steps - 1)
+            if not self.arm.arm_above_base([a + (b - a) * s for a, b in zip(self.q, goal)]):
+                self.get_logger().info("refused: the path would pass below the ground")
+                return
         # The quintic peaks at 1.875 * travel / T in speed and 5.774 * travel / T^2 in acceleration.
         duration = max(1.875 * travel / MAX_SPEED, math.sqrt(5.774 * travel / MAX_ACCEL), MIN_MOVE_TIME)
         self.move = (list(self.q), goal, time.monotonic(), duration)
