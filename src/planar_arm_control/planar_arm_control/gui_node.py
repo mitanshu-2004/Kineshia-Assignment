@@ -240,8 +240,9 @@ class Window(QtWidgets.QWidget):
         busy = (fresh and not self.idle) or self.action_pending
         for box in (self.move_x, self.move_y, self.pick_x, self.pick_y, self.place_x, self.place_y):
             box.setEnabled(not busy)
-        for button in (self.move_button, self.pick_place_button):
-            button.setEnabled(fresh and self.idle and not self.action_pending)
+        ready = fresh and self.idle and not self.action_pending
+        self.move_button.setEnabled(ready and self.move_client.service_is_ready())
+        self.pick_place_button.setEnabled(ready and self.action_client.server_is_ready())
         self.cancel_button.setEnabled(fresh and self.action_goal is not None and not self.cancel_requested)
 
     def show_move(self):
@@ -308,9 +309,12 @@ class Window(QtWidgets.QWidget):
         self.check_health()
 
     def cancel_pick_place(self):
+        goal = self.action_goal
+        if goal is None:
+            return
         self.cancel_requested = True
         self.check_health()
-        self.action_goal.cancel_goal_async()
+        goal.cancel_goal_async()
 
     def on_reply(self, reply):
         response, x, y = reply

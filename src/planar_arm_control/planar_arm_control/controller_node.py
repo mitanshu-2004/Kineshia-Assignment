@@ -30,9 +30,9 @@ import signal
 import time
 
 import rclpy
-from rclpy.action import ActionServer, CancelResponse
+from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
-from rclpy.node import Node
+from rclpy.lifecycle import LifecycleNode, TransitionCallbackReturn
 from rclpy.qos import DurabilityPolicy, QoSProfile
 from rclpy.task import Future
 from sensor_msgs.msg import JointState
@@ -53,6 +53,7 @@ GRASP_TIME = 0.5  # pause to close or open the gripper
 GOAL_TOLERANCE = 1e-3  # the IK answer must put the tool within 1 mm of the target
 JOINT_TOLERANCE = 1e-3  # measured pose must reach the commanded goal before the next move
 VELOCITY_GAIN = 8.0  # position correction in velocity mode, 1/s
+JITTER_SAMPLE_S = 10.0
 
 
 class SimArm:
@@ -85,7 +86,7 @@ class SimArm:
         return list(self.q)
 
 
-class ControllerNode(Node):
+class ControllerNode(LifecycleNode):
     def __init__(self, backend=None):
         super().__init__("controller_node")
         self.arm = PlanarArm(LINK_LENGTHS)
@@ -98,22 +99,64 @@ class ControllerNode(Node):
         self.period = 1.0 / rate
         self.backend = backend if backend is not None else SimArm(HOME, self.mode, self.period)
         self.q = self.backend.read()
-        self.last_tick = time.monotonic()
         self.holding = False
         # Steps to run, as (phase, start pose, goal pose, duration); the first one is running.
         self.steps = []
         self.step_start = 0.0
         self.action_goal = None
         self.action_done = None
-        self.joint_pub = self.create_publisher(JointState, "joint_states", 10)
-        # Transient local: a GUI started later still gets the current status.
-        latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
-        self.status_pub = self.create_publisher(ArmStatus, "arm_status", latched)
-        self.create_timer(self.period, self.tick)
+        self.joint_pub = None
+        self.status_pub = None
+        self.timer = None
         self.create_service(MoveToTarget, "move_to_target", self.on_move)
         self.action_server = ActionServer(self, PickPlaceAction, "pick_place", self.execute_pick_place,
-                                          cancel_callback=self.on_cancel, callback_group=ReentrantCallbackGroup())
+                                          goal_callback=self.on_goal, cancel_callback=self.on_cancel,
+                                          callback_group=ReentrantCallbackGroup())
+
+    def on_configure(self, state):
+        self.joint_pub = self.create_lifecycle_publisher(JointState, "joint_states", 10)
+        # Transient local: a GUI started later still gets the current status.
+        latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.status_pub = self.create_lifecycle_publisher(ArmStatus, "arm_status", latched)
+        return super().on_configure(state)
+
+    def on_activate(self, state):
+        result = super().on_activate(state)
+        if result != TransitionCallbackReturn.SUCCESS:
+            return result
+        self.q = self.backend.read()
+        self.last_tick = self.jitter_start = time.monotonic()
+        self.jitter_count = 0
+        self.jitter_total = self.jitter_max = 0.0
+        self.timer = self.create_timer(self.period, self.tick)
         self.publish_status()
+        return TransitionCallbackReturn.SUCCESS
+
+    def stop(self):
+        if self.timer is not None:
+            self.destroy_timer(self.timer)
+            self.timer = None
+        if self.mode == "velocity":
+            self.backend.command([0.0] * len(self.q))
+        self.q = self.backend.read()
+        self.steps.clear()
+        if self.action_done:
+            self.finish_action("inactive")
+
+    def on_deactivate(self, state):
+        self.stop()
+        self.status_pub.publish(ArmStatus(phase="inactive", holding=self.holding))
+        return super().on_deactivate(state)
+
+    def on_cleanup(self, state):
+        self.destroy_lifecycle_publisher(self.joint_pub)
+        self.destroy_lifecycle_publisher(self.status_pub)
+        self.joint_pub = self.status_pub = None
+        return super().on_cleanup(state)
+
+    def on_shutdown(self, state):
+        self.stop()
+        return super().on_shutdown(state)
 
     def plan(self, x, y, start, allow_projection):
         """Check a target reached from pose `start`; return (goal pose, point used, reason refused)."""
@@ -148,6 +191,9 @@ class ControllerNode(Node):
         self.publish_status()
 
     def on_move(self, request, response):
+        if self.timer is None:
+            response.message = "controller inactive"
+            return response
         if self.steps:
             response.message = "busy: finishing the current move"
             return response
@@ -164,6 +210,8 @@ class ControllerNode(Node):
         return response
 
     def start_pick_place(self, request):
+        if self.timer is None:
+            return "controller inactive"
         if self.steps:
             return "busy: finishing the current move"
         # Neither point is projected: picking at the wrong spot is worse than not picking.
@@ -181,6 +229,9 @@ class ControllerNode(Node):
     def on_cancel(self, _goal_handle):
         return CancelResponse.ACCEPT
 
+    def on_goal(self, _request):
+        return GoalResponse.ACCEPT if self.timer is not None else GoalResponse.REJECT
+
     async def execute_pick_place(self, goal_handle):
         if goal_handle.is_cancel_requested:
             goal_handle.canceled()
@@ -196,12 +247,12 @@ class ControllerNode(Node):
         outcome = await done
         if outcome == "canceled":
             goal_handle.canceled()
-        elif outcome == "failed":
+        elif outcome in ("failed", "inactive"):
             goal_handle.abort()
         else:
             goal_handle.succeed()
         message = {"succeeded": "pick/place complete", "canceled": "pick/place canceled",
-                   "failed": "joint goal not reached"}[outcome]
+                   "failed": "joint goal not reached", "inactive": "controller deactivated"}[outcome]
         return PickPlaceAction.Result(success=outcome == "succeeded", message=message)
 
     def finish_action(self, outcome):
@@ -212,6 +263,19 @@ class ControllerNode(Node):
 
     def tick(self):
         now = time.monotonic()
+        dt = now - self.last_tick
+        self.last_tick = now
+        if self.jitter_start is not None:
+            jitter = abs(dt - self.period)
+            self.jitter_count += 1
+            self.jitter_total += jitter
+            self.jitter_max = max(self.jitter_max, jitter)
+            if now - self.jitter_start >= JITTER_SAMPLE_S:
+                self.get_logger().info(
+                    f"timer jitter ({1000 * self.period:.1f} ms target, {self.jitter_count} intervals): "
+                    f"mean abs {1000 * self.jitter_total / self.jitter_count:.2f} ms, "
+                    f"max {1000 * self.jitter_max:.2f} ms")
+                self.jitter_start = None
         previous_q = self.q
         if self.mode == "velocity":
             self.q = self.backend.read()
@@ -269,9 +333,7 @@ class ControllerNode(Node):
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.name = ["joint1", "joint2", "joint3"]
         msg.position = self.q
-        dt = now - self.last_tick
         msg.velocity = [(q - old) / dt for q, old in zip(self.q, previous_q)] if dt > 0 else [0.0] * len(self.q)
-        self.last_tick = now
         self.joint_pub.publish(msg)
 
     def publish_status(self):
@@ -290,6 +352,7 @@ def main(args=None):
     finally:
         # Under ros2 launch a second Ctrl-C follows the first; it must not interrupt cleanup.
         signal.signal(signal.SIGINT, signal.SIG_IGN)
+        node.stop()
         node.destroy_node()
         rclpy.try_shutdown()
 
