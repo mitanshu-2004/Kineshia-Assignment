@@ -1,3 +1,3 @@
-# idle, moving, picking or placing
+# idle, moving, picking, placing or failed
 string phase
 bool holding

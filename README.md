@@ -14,6 +14,12 @@ source install/setup.bash
 ros2 launch planar_arm_control bringup.launch.py
 ```
 
+To run velocity mode instead:
+
+```bash
+ros2 launch planar_arm_control bringup.launch.py control_mode:=velocity
+```
+
 ## Check
 
 The GUI starts with the assignment targets filled in. **Move** sends `(7, 3)`, which is out of reach. The controller moves to about `(5.97, 2.56)` and reports that point in the reply.
@@ -23,6 +29,8 @@ After the move finishes, **Pick & Place** picks at `(4, 2)` and places at `(-3, 
 ## Notes
 
 The controller uses quintic interpolation for smooth starts and stops. It checks joint limits and the ground constraint along each move, then publishes `/joint_states` at 50 Hz. Pick/place rejects unreachable targets; moving to a nearby point would pick or place at the wrong location.
+
+Velocity mode sends the quintic's joint speeds, with a small position correction from the angles read back from the arm. `SimArm` integrates the commanded speed directly; it does not model motor lag. Position mode remains the default.
 
 ROS runs on a background thread and passes updates to Qt through signals. The GUI sends service requests without waiting in the Qt thread.
 

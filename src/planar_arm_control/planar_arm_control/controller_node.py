@@ -48,16 +48,36 @@ MIN_MOVE_TIME = 0.5  # also avoids dividing by zero on a zero-length move
 GRASP_TIME = 0.5  # pause to close or open the gripper
 GOAL_TOLERANCE = 1e-3  # the IK answer must put the tool within 1 mm of the target
 JOINT_TOLERANCE = 1e-3  # measured pose must reach the commanded goal before the next move
+VELOCITY_GAIN = 8.0  # position correction in velocity mode, 1/s
 
 
 class SimArm:
-    def __init__(self, q):
+    def __init__(self, q, mode="position", period=0.02):
         self.q = list(q)
+        self.mode = mode
+        self.period = period
+        self.velocity = [0.0] * len(q)
+        self.last_update = time.monotonic()
 
-    def command(self, q):
-        self.q = list(q)
+    def advance(self):
+        now = time.monotonic()
+        if self.mode == "velocity":
+            dt = now - self.last_update
+            # A missed timer must not keep an old velocity running beyond the checked period.
+            self.q = [q + v * min(dt, self.period) for q, v in zip(self.q, self.velocity)]
+            if dt > self.period:
+                self.velocity = [0.0] * len(self.q)
+        self.last_update = now
+
+    def command(self, values):
+        self.advance()
+        if self.mode == "velocity":
+            self.velocity = list(values)
+        else:
+            self.q = list(values)
 
     def read(self):
+        self.advance()
         return list(self.q)
 
 
@@ -66,8 +86,15 @@ class ControllerNode(Node):
         super().__init__("controller_node")
         self.arm = PlanarArm(LINK_LENGTHS)
         rate = self.declare_parameter("publish_rate_hz", 50.0).value
-        self.backend = backend if backend is not None else SimArm(HOME)
+        self.mode = self.declare_parameter("control_mode", "position").value
+        if self.mode not in ("position", "velocity"):
+            raise ValueError("control_mode must be 'position' or 'velocity'")
+        if rate <= 0:
+            raise ValueError("publish_rate_hz must be positive")
+        self.period = 1.0 / rate
+        self.backend = backend if backend is not None else SimArm(HOME, self.mode, self.period)
         self.q = self.backend.read()
+        self.last_tick = time.monotonic()
         self.holding = False
         # Steps to run, as (phase, start pose, goal pose, duration); the first one is running.
         self.steps = []
@@ -76,7 +103,7 @@ class ControllerNode(Node):
         # Transient local: a GUI started later still gets the current status.
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.status_pub = self.create_publisher(ArmStatus, "arm_status", latched)
-        self.create_timer(1.0 / rate, self.tick)
+        self.create_timer(self.period, self.tick)
         self.create_service(MoveToTarget, "move_to_target", self.on_move)
         self.create_service(PickPlace, "pick_place", self.on_pick_place)
         self.publish_status()
@@ -151,28 +178,56 @@ class ControllerNode(Node):
         return response
 
     def tick(self):
+        now = time.monotonic()
+        previous_q = self.q
+        if self.mode == "velocity":
+            self.q = self.backend.read()
         if self.steps:
             phase, start, goal, duration = self.steps[0]
             # Fraction of the step done, from the time passed since it started.
-            s = min((time.monotonic() - self.step_start) / duration, 1.0)
+            s = min((now - self.step_start) / duration, 1.0)
             # Quintic: zero speed and acceleration at both ends, so the arm eases in and out.
             eased = 10 * s**3 - 15 * s**4 + 6 * s**5
             command = [a + (b - a) * eased for a, b in zip(start, goal)]
-            self.backend.command(command)
-            self.q = self.backend.read()
+            if self.mode == "velocity":
+                slope = (30 * s**2 - 60 * s**3 + 30 * s**4) / duration
+                velocity = [(b - a) * slope + VELOCITY_GAIN * (ref - actual)
+                            for a, b, ref, actual in zip(start, goal, command, self.q)]
+                velocity = [max(-MAX_SPEED, min(MAX_SPEED, v)) for v in velocity]
+                predicted = [q + v * self.period for q, v in zip(self.q, velocity)]
+                if not (self.arm.within_joint_limits(predicted) and self.arm.arm_above_base(predicted)):
+                    velocity = [0.0] * len(self.q)
+                self.backend.command(velocity)
+            else:
+                self.backend.command(command)
+                self.q = self.backend.read()
             arrived = max(abs(a - b) for a, b in zip(self.q, goal)) <= JOINT_TOLERANCE
-            if s == 1.0 and (phase != "moving" or arrived):
+            if (self.mode == "velocity" and phase == "moving" and s == 1.0 and not arrived
+                    and now - self.step_start > duration + 1.0):
+                self.backend.command([0.0] * len(self.q))
+                self.steps.clear()
+                self.status_pub.publish(ArmStatus(phase="failed", holding=self.holding))
+                self.get_logger().error("move failed: joint goal not reached")
+            elif s == 1.0 and (phase != "moving" or arrived):
+                if self.mode == "velocity":
+                    self.backend.command([0.0] * len(self.q))
                 if phase != "moving":
                     self.holding = phase == "picking"
                 self.steps.pop(0)
                 self.step_start = time.monotonic()
                 self.publish_status()
         else:
-            self.q = self.backend.read()
+            if self.mode == "velocity":
+                self.backend.command([0.0] * len(self.q))
+            else:
+                self.q = self.backend.read()
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.name = ["joint1", "joint2", "joint3"]
         msg.position = self.q
+        dt = now - self.last_tick
+        msg.velocity = [(q - old) / dt for q, old in zip(self.q, previous_q)] if dt > 0 else [0.0] * len(self.q)
+        self.last_tick = now
         self.joint_pub.publish(msg)
 
     def publish_status(self):

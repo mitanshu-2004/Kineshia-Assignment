@@ -7,17 +7,20 @@ control mode, trajectory duration, etc.) here.
 """
 
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
 def generate_launch_description():
     return LaunchDescription([
+        DeclareLaunchArgument("control_mode", default_value="position"),
         Node(
             package="planar_arm_control",
             executable="controller_node",
             name="controller_node",
             output="screen",
-            # parameters=[{"publish_rate_hz": 50.0, "control_mode": "position"}],
+            parameters=[{"control_mode": LaunchConfiguration("control_mode")}],
         ),
         Node(
             package="planar_arm_control",

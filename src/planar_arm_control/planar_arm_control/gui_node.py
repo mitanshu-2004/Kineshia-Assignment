@@ -164,7 +164,7 @@ class Window(QtWidgets.QWidget):
             curve.setData([t - stamp for t, _ in self.history], [a[i] for _, a in self.history])
 
     def on_status(self, phase, holding):
-        self.idle = phase == "idle"
+        self.idle = phase in ("idle", "failed")
         self.holding = holding
         self.status_label.setText(f"phase: {phase}   holding: {'yes' if holding else 'no'}")
         self.check_health()
