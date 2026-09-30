@@ -6,8 +6,8 @@ find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/MoveToTarget.srv"
-  "srv/PickPlace.srv"
   "msg/ArmStatus.msg"
+  "action/PickPlace.action"
 )
 
 ament_package()

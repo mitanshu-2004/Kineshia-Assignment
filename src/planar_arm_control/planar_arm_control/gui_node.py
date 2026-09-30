@@ -28,6 +28,7 @@ import time
 from collections import deque
 
 import rclpy
+from rclpy.action import ActionClient
 from rclpy.qos import DurabilityPolicy, QoSProfile
 from rclpy.signals import SignalHandlerOptions
 from sensor_msgs.msg import JointState
@@ -36,8 +37,9 @@ from PyQt5 import QtCore, QtWidgets
 import pyqtgraph as pg
 
 from planar_arm_control.planar_arm import PlanarArm
+from planar_arm_msgs.action import PickPlace as PickPlaceAction
 from planar_arm_msgs.msg import ArmStatus
-from planar_arm_msgs.srv import MoveToTarget, PickPlace
+from planar_arm_msgs.srv import MoveToTarget
 
 LINK_LENGTHS = [3.0, 2.0, 1.5]
 REACH = sum(LINK_LENGTHS)
@@ -57,6 +59,8 @@ class Window(QtWidgets.QWidget):
     joints = QtCore.pyqtSignal(float, list)
     status = QtCore.pyqtSignal(str, bool)
     reply = QtCore.pyqtSignal(object)
+    action_update = QtCore.pyqtSignal(str, bool)
+    goal_ready = QtCore.pyqtSignal(object)
 
     def __init__(self, node):
         super().__init__()
@@ -66,9 +70,14 @@ class Window(QtWidgets.QWidget):
         self.last_data = -math.inf
         self.idle = False
         self.holding = False
+        self.action_goal = None
+        self.action_pending = False
+        self.cancel_requested = False
         self.joints.connect(self.on_joints)
         self.status.connect(self.on_status)
         self.reply.connect(self.on_reply)
+        self.action_update.connect(self.on_action_update)
+        self.goal_ready.connect(self.on_goal_ready)
         node.create_subscription(JointState, "joint_states", lambda msg: self.joints.emit(
             msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9, list(msg.position)), 10)
         # Transient local, like the publisher, so the current status arrives even if the GUI starts later.
@@ -76,7 +85,7 @@ class Window(QtWidgets.QWidget):
         node.create_subscription(ArmStatus, "arm_status", lambda msg: self.status.emit(msg.phase, msg.holding),
                                  latched)
         self.move_client = node.create_client(MoveToTarget, "move_to_target")
-        self.pick_place_client = node.create_client(PickPlace, "pick_place")
+        self.action_client = ActionClient(node, PickPlaceAction, "pick_place")
 
         view = pg.PlotWidget(background="w")
         view.setAspectLocked(True)
@@ -123,12 +132,15 @@ class Window(QtWidgets.QWidget):
         self.move_button.clicked.connect(self.send_move)
         self.pick_place_button = QtWidgets.QPushButton("Pick && Place")
         self.pick_place_button.clicked.connect(self.send_pick_place)
+        self.cancel_button = QtWidgets.QPushButton("Cancel")
+        self.cancel_button.clicked.connect(self.cancel_pick_place)
 
         controls = QtWidgets.QGridLayout()
         for row, widgets in enumerate([
                 (QtWidgets.QLabel("Move to"), self.move_x, self.move_y, self.move_button),
                 (QtWidgets.QLabel("Pick at"), self.pick_x, self.pick_y),
-                (QtWidgets.QLabel("Place at"), self.place_x, self.place_y, self.pick_place_button)]):
+                (QtWidgets.QLabel("Place at"), self.place_x, self.place_y,
+                 self.pick_place_button, self.cancel_button)]):
             for column, widget in enumerate(widgets):
                 controls.addWidget(widget, row, column)
         controls.setColumnStretch(4, 1)
@@ -173,7 +185,8 @@ class Window(QtWidgets.QWidget):
         fresh = time.monotonic() - self.last_data < STALE_S
         self.connection_label.setText("controller: connected" if fresh else "controller: no data")
         for button in (self.move_button, self.pick_place_button):
-            button.setEnabled(fresh and self.idle)
+            button.setEnabled(fresh and self.idle and not self.action_pending)
+        self.cancel_button.setEnabled(fresh and self.action_goal is not None and not self.cancel_requested)
 
     def show_move(self):
         x, y = self.move_x.value(), self.move_y.value()
@@ -195,9 +208,45 @@ class Window(QtWidgets.QWidget):
 
     def send_pick_place(self):
         self.show_pick()
-        self.send(self.pick_place_client, PickPlace.Request(
+        if not self.action_client.server_is_ready():
+            self.action_update.emit("pick/place action unavailable", False)
+            return
+        self.action_pending = True
+        self.check_health()
+        goal = PickPlaceAction.Goal(
             pick_x=self.pick_x.value(), pick_y=self.pick_y.value(),
-            place_x=self.place_x.value(), place_y=self.place_y.value()))
+            place_x=self.place_x.value(), place_y=self.place_y.value())
+        self.action_client.send_goal_async(goal, feedback_callback=self.on_action_feedback).add_done_callback(
+            self.on_action_accepted)
+
+    def on_action_accepted(self, future):
+        handle = future.result()
+        if not handle.accepted:
+            self.goal_ready.emit(None)
+            self.action_update.emit("pick/place goal rejected", False)
+            return
+        self.goal_ready.emit(handle)
+        handle.get_result_async().add_done_callback(self.on_action_result)
+
+    def on_action_feedback(self, message):
+        self.action_update.emit(f"pick/place: {message.feedback.phase}", True)
+
+    def on_action_result(self, future):
+        result = future.result().result
+        self.action_update.emit(result.message, result.success)
+        self.goal_ready.emit(None)
+
+    def on_goal_ready(self, handle):
+        self.action_goal = handle
+        if handle is None:
+            self.action_pending = False
+        self.cancel_requested = False
+        self.check_health()
+
+    def cancel_pick_place(self):
+        self.cancel_requested = True
+        self.check_health()
+        self.action_goal.cancel_goal_async()
 
     def send(self, client, request):
         # call_async returns at once; the reply arrives on the ROS thread and goes out as a signal.
@@ -206,6 +255,10 @@ class Window(QtWidgets.QWidget):
     def on_reply(self, response):
         self.reply_label.setText(response.message)
         self.reply_label.setStyleSheet("" if response.accepted else "color: red")
+
+    def on_action_update(self, message, success):
+        self.reply_label.setText(message)
+        self.reply_label.setStyleSheet("" if success else "color: red")
 
 
 def main(args=None):

@@ -3,5 +3,7 @@ float64 pick_y
 float64 place_x
 float64 place_y
 ---
-bool accepted
+bool success
 string message
+---
+string phase

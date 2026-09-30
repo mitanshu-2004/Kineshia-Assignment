@@ -30,14 +30,18 @@ import signal
 import time
 
 import rclpy
+from rclpy.action import ActionServer, CancelResponse
+from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile
+from rclpy.task import Future
 from sensor_msgs.msg import JointState
 
 # The provided kinematics library — do not modify it.
 from planar_arm_control.planar_arm import PlanarArm
+from planar_arm_msgs.action import PickPlace as PickPlaceAction
 from planar_arm_msgs.msg import ArmStatus
-from planar_arm_msgs.srv import MoveToTarget, PickPlace
+from planar_arm_msgs.srv import MoveToTarget
 
 LINK_LENGTHS = [3.0, 2.0, 1.5]
 REACH = sum(LINK_LENGTHS)
@@ -99,13 +103,16 @@ class ControllerNode(Node):
         # Steps to run, as (phase, start pose, goal pose, duration); the first one is running.
         self.steps = []
         self.step_start = 0.0
+        self.action_goal = None
+        self.action_done = None
         self.joint_pub = self.create_publisher(JointState, "joint_states", 10)
         # Transient local: a GUI started later still gets the current status.
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.status_pub = self.create_publisher(ArmStatus, "arm_status", latched)
         self.create_timer(self.period, self.tick)
         self.create_service(MoveToTarget, "move_to_target", self.on_move)
-        self.create_service(PickPlace, "pick_place", self.on_pick_place)
+        self.action_server = ActionServer(self, PickPlaceAction, "pick_place", self.execute_pick_place,
+                                          cancel_callback=self.on_cancel, callback_group=ReentrantCallbackGroup())
         self.publish_status()
 
     def plan(self, x, y, start, allow_projection):
@@ -156,32 +163,65 @@ class ControllerNode(Node):
             response.message = f"({x:.2f}, {y:.2f}) is out of reach, " + response.message
         return response
 
-    def on_pick_place(self, request, response):
+    def start_pick_place(self, request):
         if self.steps:
-            response.message = "busy: finishing the current move"
-            return response
+            return "busy: finishing the current move"
         # Neither point is projected: picking at the wrong spot is worse than not picking.
         pick, _, reason = self.plan(request.pick_x, request.pick_y, self.q, allow_projection=False)
         if pick is None:
-            response.message = "refused: pick " + reason
-            return response
+            return "refused: pick " + reason
         place, _, reason = self.plan(request.place_x, request.place_y, pick, allow_projection=False)
         if place is None:
-            response.message = "refused: place " + reason
-            return response
+            return "refused: place " + reason
         # A pick or place is a pause at one pose while the gripper closes or opens.
         self.run([self.move_step(self.q, pick), ("picking", pick, pick, GRASP_TIME),
                   self.move_step(pick, place), ("placing", place, place, GRASP_TIME)])
-        response.accepted = True
-        response.message = (f"pick at ({request.pick_x:.2f}, {request.pick_y:.2f}), "
-                            f"place at ({request.place_x:.2f}, {request.place_y:.2f})")
-        return response
+        return None
+
+    def on_cancel(self, _goal_handle):
+        return CancelResponse.ACCEPT
+
+    async def execute_pick_place(self, goal_handle):
+        if goal_handle.is_cancel_requested:
+            goal_handle.canceled()
+            return PickPlaceAction.Result(success=False, message="canceled")
+        error = self.start_pick_place(goal_handle.request)
+        if error:
+            goal_handle.abort()
+            return PickPlaceAction.Result(success=False, message=error)
+        self.action_goal = goal_handle
+        done = Future()
+        self.action_done = done
+        goal_handle.publish_feedback(PickPlaceAction.Feedback(phase=self.steps[0][0]))
+        outcome = await done
+        if outcome == "canceled":
+            goal_handle.canceled()
+        elif outcome == "failed":
+            goal_handle.abort()
+        else:
+            goal_handle.succeed()
+        message = {"succeeded": "pick/place complete", "canceled": "pick/place canceled",
+                   "failed": "joint goal not reached"}[outcome]
+        return PickPlaceAction.Result(success=outcome == "succeeded", message=message)
+
+    def finish_action(self, outcome):
+        done = self.action_done
+        self.action_goal = None
+        self.action_done = None
+        done.set_result(outcome)
 
     def tick(self):
         now = time.monotonic()
         previous_q = self.q
         if self.mode == "velocity":
             self.q = self.backend.read()
+        if self.steps and self.action_goal and self.action_goal.is_cancel_requested:
+            if self.mode == "position":
+                self.q = self.backend.read()
+            self.backend.command([0.0] * len(self.q) if self.mode == "velocity" else self.q)
+            self.steps.clear()
+            self.publish_status()
+            self.finish_action("canceled")
         if self.steps:
             phase, start, goal, duration = self.steps[0]
             # Fraction of the step done, from the time passed since it started.
@@ -208,6 +248,8 @@ class ControllerNode(Node):
                 self.steps.clear()
                 self.status_pub.publish(ArmStatus(phase="failed", holding=self.holding))
                 self.get_logger().error("move failed: joint goal not reached")
+                if self.action_done:
+                    self.finish_action("failed")
             elif s == 1.0 and (phase != "moving" or arrived):
                 if self.mode == "velocity":
                     self.backend.command([0.0] * len(self.q))
@@ -216,6 +258,8 @@ class ControllerNode(Node):
                 self.steps.pop(0)
                 self.step_start = time.monotonic()
                 self.publish_status()
+                if not self.steps and self.action_done:
+                    self.finish_action("succeeded")
         else:
             if self.mode == "velocity":
                 self.backend.command([0.0] * len(self.q))
@@ -232,6 +276,8 @@ class ControllerNode(Node):
 
     def publish_status(self):
         self.status_pub.publish(ArmStatus(phase=self.steps[0][0] if self.steps else "idle", holding=self.holding))
+        if self.steps and self.action_goal:
+            self.action_goal.publish_feedback(PickPlaceAction.Feedback(phase=self.steps[0][0]))
 
 
 def main(args=None):
