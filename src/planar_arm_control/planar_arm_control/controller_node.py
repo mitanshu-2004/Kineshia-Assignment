@@ -145,7 +145,7 @@ class ControllerNode(LifecycleNode):
 
     def on_deactivate(self, state):
         self.stop()
-        self.status_pub.publish(ArmStatus(phase="inactive", holding=self.holding))
+        self.status_pub.publish(ArmStatus(phase="inactive", holding=self.holding, mode=self.mode))
         return super().on_deactivate(state)
 
     def on_cleanup(self, state):
@@ -310,7 +310,7 @@ class ControllerNode(LifecycleNode):
                     and now - self.step_start > duration + 1.0):
                 self.backend.command([0.0] * len(self.q))
                 self.steps.clear()
-                self.status_pub.publish(ArmStatus(phase="failed", holding=self.holding))
+                self.status_pub.publish(ArmStatus(phase="failed", holding=self.holding, mode=self.mode))
                 self.get_logger().error("move failed: joint goal not reached")
                 if self.action_done:
                     self.finish_action("failed")
@@ -337,7 +337,8 @@ class ControllerNode(LifecycleNode):
         self.joint_pub.publish(msg)
 
     def publish_status(self):
-        self.status_pub.publish(ArmStatus(phase=self.steps[0][0] if self.steps else "idle", holding=self.holding))
+        self.status_pub.publish(ArmStatus(phase=self.steps[0][0] if self.steps else "idle",
+                                          holding=self.holding, mode=self.mode))
         if self.steps and self.action_goal:
             self.action_goal.publish_feedback(PickPlaceAction.Feedback(phase=self.steps[0][0]))
 

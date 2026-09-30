@@ -57,7 +57,7 @@ def number_box(value):
 class Window(QtWidgets.QWidget):
     # Emitted on the ROS thread; Qt delivers them on the GUI thread.
     joints = QtCore.pyqtSignal(float, list, list)
-    status = QtCore.pyqtSignal(str, bool)
+    status = QtCore.pyqtSignal(str, bool, str)
     reply = QtCore.pyqtSignal(object)
     action_update = QtCore.pyqtSignal(str, bool)
     goal_ready = QtCore.pyqtSignal(object)
@@ -73,6 +73,7 @@ class Window(QtWidgets.QWidget):
         self.action_goal = None
         self.action_pending = False
         self.cancel_requested = False
+        self.move_completion = None
         self.joints.connect(self.on_joints)
         self.status.connect(self.on_status)
         self.reply.connect(self.on_reply)
@@ -82,7 +83,7 @@ class Window(QtWidgets.QWidget):
             msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9, list(msg.position), list(msg.velocity)), 10)
         # Transient local, like the publisher, so the current status arrives even if the GUI starts later.
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
-        node.create_subscription(ArmStatus, "arm_status", lambda msg: self.status.emit(msg.phase, msg.holding),
+        node.create_subscription(ArmStatus, "arm_status", lambda msg: self.status.emit(msg.phase, msg.holding, msg.mode),
                                  latched)
         self.move_client = node.create_client(MoveToTarget, "move_to_target")
         self.action_client = ActionClient(node, PickPlaceAction, "pick_place")
@@ -137,6 +138,7 @@ class Window(QtWidgets.QWidget):
         self.velocity_label = QtWidgets.QLabel()
         self.connection_label = QtWidgets.QLabel()
         self.status_label = QtWidgets.QLabel()
+        self.mode_label = QtWidgets.QLabel("—")
         self.reply_label = QtWidgets.QLabel()
         self.reply_label.setWordWrap(True)
         self.tool_label.setText("waiting for joint states")
@@ -182,6 +184,7 @@ class Window(QtWidgets.QWidget):
         readings.addRow("Joints", self.joint_label)
         readings.addRow("Velocity", self.velocity_label)
         readings.addRow("State", self.status_label)
+        readings.addRow("Mode", self.mode_label)
         readings.addRow("Connection", self.connection_label)
         readings.addRow("Last command", self.reply_label)
         side = QtWidgets.QVBoxLayout()
@@ -228,10 +231,15 @@ class Window(QtWidgets.QWidget):
         for i, curve in enumerate(curves):
             curve.setData(times, [row[index + 1][i] for row in self.history])
 
-    def on_status(self, phase, holding):
+    def on_status(self, phase, holding, mode):
         self.idle = phase in ("idle", "failed")
         self.holding = holding
         self.status_label.setText(f"{phase}   holding: {'yes' if holding else 'no'}")
+        self.mode_label.setText(mode)
+        if self.move_completion and phase in ("idle", "failed", "inactive"):
+            self.reply_label.setText(self.move_completion if phase == "idle" else f"move {phase}")
+            self.reply_label.setStyleSheet("" if phase == "idle" else "color: red")
+            self.move_completion = None
         self.check_health()
 
     def check_health(self):
@@ -320,6 +328,7 @@ class Window(QtWidgets.QWidget):
         response, x, y = reply
         self.reply_label.setText(response.message)
         self.reply_label.setStyleSheet("" if response.accepted else "color: red")
+        self.move_completion = response.message.replace("moving to", "moved to") if response.accepted else None
         distance = math.hypot(x, y)
         if response.accepted and y >= 0 and distance > REACH:
             self.projected_mark.setData([x * REACH / distance], [y * REACH / distance])
