@@ -47,14 +47,27 @@ MAX_ACCEL = math.radians(120.0)
 MIN_MOVE_TIME = 0.5  # also avoids dividing by zero on a zero-length move
 GRASP_TIME = 0.5  # pause to close or open the gripper
 GOAL_TOLERANCE = 1e-3  # the IK answer must put the tool within 1 mm of the target
+JOINT_TOLERANCE = 1e-3  # measured pose must reach the commanded goal before the next move
+
+
+class SimArm:
+    def __init__(self, q):
+        self.q = list(q)
+
+    def command(self, q):
+        self.q = list(q)
+
+    def read(self):
+        return list(self.q)
 
 
 class ControllerNode(Node):
-    def __init__(self):
+    def __init__(self, backend=None):
         super().__init__("controller_node")
         self.arm = PlanarArm(LINK_LENGTHS)
         rate = self.declare_parameter("publish_rate_hz", 50.0).value
-        self.q = list(HOME)
+        self.backend = backend if backend is not None else SimArm(HOME)
+        self.q = self.backend.read()
         self.holding = False
         # Steps to run, as (phase, start pose, goal pose, duration); the first one is running.
         self.steps = []
@@ -144,13 +157,18 @@ class ControllerNode(Node):
             s = min((time.monotonic() - self.step_start) / duration, 1.0)
             # Quintic: zero speed and acceleration at both ends, so the arm eases in and out.
             eased = 10 * s**3 - 15 * s**4 + 6 * s**5
-            self.q = [a + (b - a) * eased for a, b in zip(start, goal)]
-            if s == 1.0:
+            command = [a + (b - a) * eased for a, b in zip(start, goal)]
+            self.backend.command(command)
+            self.q = self.backend.read()
+            arrived = max(abs(a - b) for a, b in zip(self.q, goal)) <= JOINT_TOLERANCE
+            if s == 1.0 and (phase != "moving" or arrived):
                 if phase != "moving":
                     self.holding = phase == "picking"
                 self.steps.pop(0)
-                self.step_start += duration
+                self.step_start = time.monotonic()
                 self.publish_status()
+        else:
+            self.q = self.backend.read()
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.name = ["joint1", "joint2", "joint3"]
