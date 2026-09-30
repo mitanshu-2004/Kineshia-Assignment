@@ -111,7 +111,6 @@ class ControllerNode(Node):
             return response
         self.run([self.move_step(self.q, goal)])
         response.accepted = True
-        response.goal_x, response.goal_y = float(target[0]), float(target[1])
         response.message = f"moving to ({target[0]:.2f}, {target[1]:.2f})"
         if math.hypot(x, y) > REACH:
             response.message = f"({x:.2f}, {y:.2f}) is out of reach, " + response.message

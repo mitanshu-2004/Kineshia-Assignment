@@ -56,7 +56,7 @@ class Window(QtWidgets.QWidget):
     # Emitted on the ROS thread; Qt delivers them on the GUI thread.
     joints = QtCore.pyqtSignal(float, list)
     status = QtCore.pyqtSignal(str, bool)
-    reply = QtCore.pyqtSignal(object, object)
+    reply = QtCore.pyqtSignal(object)
 
     def __init__(self, node):
         super().__init__()
@@ -88,11 +88,12 @@ class Window(QtWidgets.QWidget):
         arc = [i * math.pi / 100 for i in range(101)]
         view.plot([REACH * math.cos(a) for a in arc], [REACH * math.sin(a) for a in arc],
                   pen=pg.mkPen((150, 150, 150), style=QtCore.Qt.DashLine))
-        self.block = view.plot(pen=None, symbol="s", symbolSize=18, symbolBrush=(230, 160, 40))
         self.links = view.plot(pen=pg.mkPen(dark, width=8), symbol="o", symbolSize=12,
                                symbolBrush="w", symbolPen=pg.mkPen(dark, width=2))
+        # Added after the arm so it is drawn on top, visible on the tool while carried.
+        self.block = view.plot(pen=None, symbol="s", symbolSize=18, symbolBrush=(230, 160, 40))
         # Follows the move boxes, so the target is visible before it is sent.
-        self.target = view.plot(pen=None, symbolSize=16)
+        self.move_mark = view.plot(pen=None, symbolSize=16)
         angles = pg.PlotWidget(background="w", title="Joint angles (deg)")
         angles.setLabel("bottom", "seconds ago")
         angles.addLegend(brush=(255, 255, 255, 220))  # readable where it covers the curves
@@ -113,15 +114,15 @@ class Window(QtWidgets.QWidget):
         self.pick_x, self.pick_y = number_box(4.0), number_box(2.0)
         self.place_x, self.place_y = number_box(-3.0), number_box(3.0)
         for box in (self.move_x, self.move_y):
-            box.valueChanged.connect(self.show_target)
-        self.show_target()
+            box.valueChanged.connect(self.show_move)
+        for box in (self.pick_x, self.pick_y, self.place_x, self.place_y):
+            box.valueChanged.connect(self.show_pick)
+        self.show_pick()
+        self.show_move()
         self.move_button = QtWidgets.QPushButton("Move")
-        self.move_button.clicked.connect(lambda: self.send(self.move_client, MoveToTarget.Request(
-            x=self.move_x.value(), y=self.move_y.value())))
+        self.move_button.clicked.connect(self.send_move)
         self.pick_place_button = QtWidgets.QPushButton("Pick && Place")
-        self.pick_place_button.clicked.connect(lambda: self.send(self.pick_place_client, PickPlace.Request(
-            pick_x=self.pick_x.value(), pick_y=self.pick_y.value(),
-            place_x=self.place_x.value(), place_y=self.place_y.value())))
+        self.pick_place_button.clicked.connect(self.send_pick_place)
 
         controls = QtWidgets.QGridLayout()
         for row, widgets in enumerate([
@@ -146,6 +147,10 @@ class Window(QtWidgets.QWidget):
 
     def on_joints(self, stamp, q):
         self.last_data = time.monotonic()
+        # A gap in the controller's own timestamps means it stopped: start the plot afresh instead of
+        # joining across the gap. A late delivery keeps its stamp, so a busy GUI cannot fake a gap.
+        if self.history and stamp - self.history[-1][0] > STALE_S:
+            self.history.clear()
         points = self.arm.forward_kinematics(q)
         self.links.setData([p[0] for p in points], [p[1] for p in points])
         x, y = points[-1]
@@ -170,24 +175,37 @@ class Window(QtWidgets.QWidget):
         for button in (self.move_button, self.pick_place_button):
             button.setEnabled(fresh and self.idle)
 
-    def show_target(self):
+    def show_move(self):
         x, y = self.move_x.value(), self.move_y.value()
         # ○ above the ground and within reach; ✕ where the arm cannot go as given.
         valid = y >= 0 and math.hypot(x, y) <= REACH
         colour = (40, 160, 60) if valid else (220, 40, 40)
-        self.target.setData([x], [y], symbol="o" if valid else "x", symbolPen=pg.mkPen(colour, width=2),
-                            symbolBrush=(0, 0, 0, 0) if valid else colour)
+        self.move_mark.setData([x], [y], symbol="o" if valid else "x", symbolPen=pg.mkPen(colour, width=2),
+                               symbolBrush=(0, 0, 0, 0) if valid else colour)
+
+    def show_pick(self):
+        # The block waits at the pick point; the move target is hidden while pick and place is in use.
+        if not self.holding:
+            self.block.setData([self.pick_x.value()], [self.pick_y.value()])
+        self.move_mark.setData([], [])
+
+    def send_move(self):
+        self.show_move()
+        self.send(self.move_client, MoveToTarget.Request(x=self.move_x.value(), y=self.move_y.value()))
+
+    def send_pick_place(self):
+        self.show_pick()
+        self.send(self.pick_place_client, PickPlace.Request(
+            pick_x=self.pick_x.value(), pick_y=self.pick_y.value(),
+            place_x=self.place_x.value(), place_y=self.place_y.value()))
 
     def send(self, client, request):
         # call_async returns at once; the reply arrives on the ROS thread and goes out as a signal.
-        client.call_async(request).add_done_callback(lambda future: self.reply.emit(request, future.result()))
+        client.call_async(request).add_done_callback(lambda future: self.reply.emit(future.result()))
 
-    def on_reply(self, request, response):
+    def on_reply(self, response):
         self.reply_label.setText(response.message)
         self.reply_label.setStyleSheet("" if response.accepted else "color: red")
-        if response.accepted and isinstance(request, PickPlace.Request):
-            # The block waits at the pick point until the arm picks it up.
-            self.block.setData([request.pick_x], [request.pick_y])
 
 
 def main(args=None):
@@ -200,6 +218,8 @@ def main(args=None):
     threading.Thread(target=rclpy.spin, args=(node,)).start()
     signal.signal(signal.SIGINT, lambda *_: app.quit())
     app.exec_()
+    # Under ros2 launch a second Ctrl-C follows the first; it must not interrupt the shutdown.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     rclpy.try_shutdown()
 
 
