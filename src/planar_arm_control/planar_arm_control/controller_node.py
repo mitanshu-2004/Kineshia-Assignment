@@ -27,6 +27,7 @@ pick-and-place with feedback/cancel.
 
 import math
 import signal
+import threading
 import time
 
 import rclpy
@@ -89,6 +90,7 @@ class SimArm:
 class ControllerNode(LifecycleNode):
     def __init__(self, backend=None, backend_factory=None):
         super().__init__("controller_node")
+        self._lock = threading.RLock()
         self.arm = PlanarArm(LINK_LENGTHS)
         rate = self.declare_parameter("publish_rate_hz", 50.0).value
         self.mode = self.declare_parameter("control_mode", "position").value
@@ -198,33 +200,34 @@ class ControllerNode(LifecycleNode):
         return getattr(self.backend, "ready", True)
 
     def on_move(self, request, response):
-        if self.timer is None:
-            response.message = "controller inactive"
+        with self._lock:
+            if self.timer is None:
+                response.message = "controller inactive"
+                return response
+            if not self.backend_ready():
+                response.message = "waiting for joint feedback"
+                return response
+            if self.steps or self.action_goal is not None:
+                response.message = "busy: finishing the current move"
+                return response
+            x, y = request.x, request.y
+            goal, target, reason = self.plan(x, y, self.q, allow_projection=True)
+            if goal is None:
+                response.message = "refused: " + reason
+                return response
+            self.run([self.move_step(self.q, goal)])
+            response.accepted = True
+            response.message = f"moving to ({target[0]:.2f}, {target[1]:.2f})"
+            if math.hypot(x, y) > REACH:
+                response.message = f"({x:.2f}, {y:.2f}) is out of reach, " + response.message
             return response
-        if not self.backend_ready():
-            response.message = "waiting for joint feedback"
-            return response
-        if self.steps:
-            response.message = "busy: finishing the current move"
-            return response
-        x, y = request.x, request.y
-        goal, target, reason = self.plan(x, y, self.q, allow_projection=True)
-        if goal is None:
-            response.message = "refused: " + reason
-            return response
-        self.run([self.move_step(self.q, goal)])
-        response.accepted = True
-        response.message = f"moving to ({target[0]:.2f}, {target[1]:.2f})"
-        if math.hypot(x, y) > REACH:
-            response.message = f"({x:.2f}, {y:.2f}) is out of reach, " + response.message
-        return response
 
     def start_pick_place(self, request):
         if self.timer is None:
             return "controller inactive"
         if not self.backend_ready():
             return "waiting for joint feedback"
-        if self.steps:
+        if self.steps or self.action_goal is not None:
             return "busy: finishing the current move"
         # Neither point is projected: picking at the wrong spot is worse than not picking.
         pick, _, reason = self.plan(request.pick_x, request.pick_y, self.q, allow_projection=False)
@@ -239,112 +242,133 @@ class ControllerNode(LifecycleNode):
         return None
 
     def on_cancel(self, _goal_handle):
-        return CancelResponse.ACCEPT
+        with self._lock:
+            return CancelResponse.ACCEPT
 
-    def on_goal(self, _request):
-        return GoalResponse.ACCEPT if self.timer is not None and self.backend_ready() else GoalResponse.REJECT
+    def on_goal(self, request):
+        with self._lock:
+            if self.timer is None or not self.backend_ready():
+                return GoalResponse.REJECT
+            if self.steps or self.action_goal is not None:
+                return GoalResponse.REJECT
+            pick, _, _ = self.plan(request.pick_x, request.pick_y, self.q, allow_projection=False)
+            if pick is None:
+                return GoalResponse.REJECT
+            place, _, _ = self.plan(request.place_x, request.place_y, pick, allow_projection=False)
+            if place is None:
+                return GoalResponse.REJECT
+            return GoalResponse.ACCEPT
 
     async def execute_pick_place(self, goal_handle):
-        if goal_handle.is_cancel_requested:
-            goal_handle.canceled()
-            return PickPlaceAction.Result(success=False, message="canceled")
-        error = self.start_pick_place(goal_handle.request)
-        if error:
-            goal_handle.abort()
-            return PickPlaceAction.Result(success=False, message=error)
-        self.action_goal = goal_handle
         done = Future()
-        self.action_done = done
-        goal_handle.publish_feedback(PickPlaceAction.Feedback(phase=self.steps[0][0]))
+        with self._lock:
+            if goal_handle.is_cancel_requested:
+                goal_handle.canceled()
+                return PickPlaceAction.Result(success=False, message="canceled")
+            error = self.start_pick_place(goal_handle.request)
+            if error:
+                goal_handle.abort()
+                return PickPlaceAction.Result(success=False, message=error)
+            self.action_goal = goal_handle
+            self.action_done = done
+            goal_handle.publish_feedback(PickPlaceAction.Feedback(phase=self.steps[0][0]))
         outcome = await done
-        if outcome == "canceled":
-            goal_handle.canceled()
-        elif outcome in ("failed", "inactive"):
-            goal_handle.abort()
-        else:
-            goal_handle.succeed()
-        message = {"succeeded": "pick/place complete", "canceled": "pick/place canceled",
-                   "failed": "joint goal not reached", "inactive": "controller deactivated"}[outcome]
-        return PickPlaceAction.Result(success=outcome == "succeeded", message=message)
+        with self._lock:
+            if outcome == "canceled":
+                goal_handle.canceled()
+            elif outcome in ("failed", "inactive"):
+                goal_handle.abort()
+            else:
+                goal_handle.succeed()
+            message = {"succeeded": "pick/place complete", "canceled": "pick/place canceled",
+                       "failed": "joint goal not reached", "inactive": "controller deactivated"}.get(
+                           outcome, "operation finished")
+            return PickPlaceAction.Result(success=outcome == "succeeded", message=message)
 
     def finish_action(self, outcome):
-        done = self.action_done
-        self.action_goal = None
-        self.action_done = None
-        done.set_result(outcome)
+        with self._lock:
+            done = self.action_done
+            self.action_goal = None
+            self.action_done = None
+            if done is not None and not done.done():
+                done.set_result(outcome)
 
     def tick(self):
-        now = time.monotonic()
-        dt = now - self.last_tick
-        self.last_tick = now
-        if self.jitter_start is not None:
-            jitter = abs(dt - self.period)
-            self.jitter_count += 1
-            self.jitter_total += jitter
-            self.jitter_max = max(self.jitter_max, jitter)
-            if now - self.jitter_start >= JITTER_SAMPLE_S:
-                self.get_logger().info(
-                    f"timer jitter ({1000 * self.period:.1f} ms target, {self.jitter_count} intervals): "
-                    f"mean abs {1000 * self.jitter_total / self.jitter_count:.2f} ms, "
-                    f"max {1000 * self.jitter_max:.2f} ms")
-                self.jitter_start = None
-        if not self.backend_ready():
-            return
-        previous_q = self.q
-        if self.mode == "velocity":
-            self.q = self.backend.read()
-        if self.steps and self.action_goal and self.action_goal.is_cancel_requested:
-            if self.mode == "position":
-                self.q = self.backend.read()
-            self.backend.command([0.0] * len(self.q) if self.mode == "velocity" else self.q)
-            self.steps.clear()
-            self.publish_status()
-            self.finish_action("canceled")
-        if self.steps:
-            phase, start, goal, duration = self.steps[0]
-            # Fraction of the step done, from the time passed since it started.
-            s = min((now - self.step_start) / duration, 1.0)
-            # Quintic: zero speed and acceleration at both ends, so the arm eases in and out.
-            eased = 10 * s**3 - 15 * s**4 + 6 * s**5
-            command = [a + (b - a) * eased for a, b in zip(start, goal)]
+        with self._lock:
+            now = time.monotonic()
+            dt = now - self.last_tick
+            self.last_tick = now
+            if self.jitter_start is not None:
+                jitter = abs(dt - self.period)
+                self.jitter_count += 1
+                self.jitter_total += jitter
+                self.jitter_max = max(self.jitter_max, jitter)
+                if now - self.jitter_start >= JITTER_SAMPLE_S:
+                    self.get_logger().info(
+                        f"timer jitter ({1000 * self.period:.1f} ms target, {self.jitter_count} intervals): "
+                        f"mean abs {1000 * self.jitter_total / self.jitter_count:.2f} ms, "
+                        f"max {1000 * self.jitter_max:.2f} ms")
+                    self.jitter_start = None
+            if not self.backend_ready():
+                return
+            previous_q = self.q
             if self.mode == "velocity":
-                slope = (30 * s**2 - 60 * s**3 + 30 * s**4) / duration
-                velocity = [(b - a) * slope + VELOCITY_GAIN * (ref - actual)
-                            for a, b, ref, actual in zip(start, goal, command, self.q)]
-                velocity = [max(-MAX_SPEED, min(MAX_SPEED, v)) for v in velocity]
-                predicted = [q + v * self.period for q, v in zip(self.q, velocity)]
-                if not (self.arm.within_joint_limits(predicted) and self.arm.arm_above_base(predicted)):
-                    velocity = [0.0] * len(self.q)
-                self.backend.command(velocity)
-            else:
-                self.backend.command(command)
                 self.q = self.backend.read()
-            arrived = max(abs(a - b) for a, b in zip(self.q, goal)) <= self.joint_tol
-            settle = 1.0 if self.mode == "velocity" else 4.0
-            if (phase == "moving" and s == 1.0 and not arrived
-                    and now - self.step_start > duration + settle):
-                if self.mode == "velocity":
-                    self.backend.command([0.0] * len(self.q))
+            if self.steps and self.action_goal and self.action_goal.is_cancel_requested:
+                if self.mode == "position":
+                    self.q = self.backend.read()
+                self.backend.command([0.0] * len(self.q) if self.mode == "velocity" else self.q)
                 self.steps.clear()
-                self.status_pub.publish(ArmStatus(phase="failed", holding=self.holding, mode=self.mode))
-                self.get_logger().error("move failed: joint goal not reached")
-                if self.action_done:
-                    self.finish_action("failed")
-            elif s == 1.0 and (phase != "moving" or arrived):
+                self.publish_status()
+                self.finish_action("canceled")
+            if self.steps:
+                phase, start, goal, duration = self.steps[0]
+                # Fraction of the step done, from the time passed since it started.
+                s = min((now - self.step_start) / duration, 1.0)
+                # Quintic: zero speed and acceleration at both ends, so the arm eases in and out.
+                eased = 10 * s**3 - 15 * s**4 + 6 * s**5
+                command = [a + (b - a) * eased for a, b in zip(start, goal)]
+                if self.mode == "velocity":
+                    slope = (30 * s**2 - 60 * s**3 + 30 * s**4) / duration
+                    velocity = [(b - a) * slope + VELOCITY_GAIN * (ref - actual)
+                                for a, b, ref, actual in zip(start, goal, command, self.q)]
+                    # Uniform vector scaling: preserves the planned trajectory direction
+                    max_speed_ratio = max(abs(v) / MAX_SPEED for v in velocity)
+                    if max_speed_ratio > 1.0:
+                        velocity = [v / max_speed_ratio for v in velocity]
+                    predicted = [q + v * self.period for q, v in zip(self.q, velocity)]
+                    if not (self.arm.within_joint_limits(predicted) and self.arm.arm_above_base(predicted)):
+                        velocity = [0.0] * len(self.q)
+                    self.backend.command(velocity)
+                else:
+                    self.backend.command(command)
+                    self.q = self.backend.read()
+                arrived = max(abs(a - b) for a, b in zip(self.q, goal)) <= self.joint_tol
+                settle = 1.0 if self.mode == "velocity" else 4.0
+                if (phase == "moving" and s == 1.0 and not arrived
+                        and now - self.step_start > duration + settle):
+                    if self.mode == "velocity":
+                        self.backend.command([0.0] * len(self.q))
+                    self.steps.clear()
+                    self.status_pub.publish(ArmStatus(phase="failed", holding=self.holding, mode=self.mode))
+                    self.get_logger().error("move failed: joint goal not reached")
+                    if self.action_done:
+                        self.finish_action("failed")
+                elif s == 1.0 and (phase != "moving" or arrived):
+                    if self.mode == "velocity":
+                        self.backend.command([0.0] * len(self.q))
+                    if phase != "moving":
+                        self.holding = phase == "picking"
+                    self.steps.pop(0)
+                    self.step_start = time.monotonic()
+                    self.publish_status()
+                    if not self.steps and self.action_done:
+                        self.finish_action("succeeded")
+            else:
                 if self.mode == "velocity":
                     self.backend.command([0.0] * len(self.q))
-                if phase != "moving":
-                    self.holding = phase == "picking"
-                self.steps.pop(0)
-                self.step_start = time.monotonic()
-                self.publish_status()
-                if not self.steps and self.action_done:
-                    self.finish_action("succeeded")
-        else:
-            if self.mode == "velocity":
-                self.backend.command([0.0] * len(self.q))
-            else:
-                self.q = self.backend.read()
+                else:
+                    self.q = self.backend.read()
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.name = ["joint1", "joint2", "joint3"]
@@ -353,8 +377,9 @@ class ControllerNode(LifecycleNode):
         self.joint_pub.publish(msg)
 
     def publish_status(self):
-        self.status_pub.publish(ArmStatus(phase=self.steps[0][0] if self.steps else "idle",
-                                          holding=self.holding, mode=self.mode))
+        if self.status_pub is not None:
+            self.status_pub.publish(ArmStatus(phase=self.steps[0][0] if self.steps else "idle",
+                                              holding=self.holding, mode=self.mode))
         if self.steps and self.action_goal:
             self.action_goal.publish_feedback(PickPlaceAction.Feedback(phase=self.steps[0][0]))
 

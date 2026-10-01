@@ -66,8 +66,10 @@ class Window(QtWidgets.QWidget):
         super().__init__()
         self.setWindowTitle("Planar arm")
         self.arm = PlanarArm(LINK_LENGTHS)
-        self.history = deque()
+        self.history = deque(maxlen=2000)
         self.last_data = -math.inf
+        self.draw_count = 0
+        self.action_start_time = 0.0
         self.idle = False
         self.holding = False
         self.action_goal = None
@@ -202,9 +204,9 @@ class Window(QtWidgets.QWidget):
 
     def on_joints(self, stamp, q, velocity):
         self.last_data = time.monotonic()
-        # A gap in the controller's own timestamps means it stopped: start the plot afresh instead of
-        # joining across the gap. A late delivery keeps its stamp, so a busy GUI cannot fake a gap.
-        if self.history and stamp - self.history[-1][0] > STALE_S:
+        # A gap or backward reset in the controller's timestamps means it stopped or restarted:
+        # start the plot afresh instead of joining across the gap.
+        if self.history and (stamp - self.history[-1][0] > STALE_S or stamp < self.history[-1][0]):
             self.history.clear()
         points = self.arm.forward_kinematics(q)
         self.links.setData([p[0] for p in points], [p[1] for p in points])
@@ -219,7 +221,9 @@ class Window(QtWidgets.QWidget):
         self.history.append((stamp, angles, speeds))
         while self.history[0][0] < stamp - HISTORY_S:
             self.history.popleft()
-        self.update_plot()
+        self.draw_count += 1
+        if self.draw_count % 2 == 0:
+            self.update_plot()
 
     def update_plot(self):
         if not self.history:
@@ -245,6 +249,11 @@ class Window(QtWidgets.QWidget):
     def check_health(self):
         fresh = time.monotonic() - self.last_data < STALE_S
         self.connection_label.setText("connected" if fresh else "no data")
+        if self.action_pending and (time.monotonic() - self.action_start_time > 4.0 or not fresh):
+            self.action_pending = False
+            self.action_goal = None
+            self.reply_label.setText("action timed out or controller unavailable")
+            self.reply_label.setStyleSheet("color: red")
         busy = (fresh and not self.idle) or self.action_pending
         for box in (self.move_x, self.move_y, self.pick_x, self.pick_y, self.place_x, self.place_y):
             box.setEnabled(not busy)
@@ -285,6 +294,7 @@ class Window(QtWidgets.QWidget):
             self.action_update.emit("pick/place action unavailable", False)
             return
         self.action_pending = True
+        self.action_start_time = time.monotonic()
         self.check_health()
         goal = PickPlaceAction.Goal(
             pick_x=self.pick_x.value(), pick_y=self.pick_y.value(),
@@ -311,8 +321,7 @@ class Window(QtWidgets.QWidget):
 
     def on_goal_ready(self, handle):
         self.action_goal = handle
-        if handle is None:
-            self.action_pending = False
+        self.action_pending = False
         self.cancel_requested = False
         self.check_health()
 
