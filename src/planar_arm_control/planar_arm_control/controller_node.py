@@ -87,7 +87,7 @@ class SimArm:
 
 
 class ControllerNode(LifecycleNode):
-    def __init__(self, backend=None):
+    def __init__(self, backend=None, backend_factory=None):
         super().__init__("controller_node")
         self.arm = PlanarArm(LINK_LENGTHS)
         rate = self.declare_parameter("publish_rate_hz", 50.0).value
@@ -97,7 +97,11 @@ class ControllerNode(LifecycleNode):
         if rate <= 0:
             raise ValueError("publish_rate_hz must be positive")
         self.period = 1.0 / rate
-        self.backend = backend if backend is not None else SimArm(HOME, self.mode, self.period)
+        self.joint_tol = self.declare_parameter("joint_tolerance", JOINT_TOLERANCE).value
+        if self.joint_tol <= 0:
+            raise ValueError("joint_tolerance must be positive")
+        self.backend = backend if backend is not None else (
+            backend_factory(self) if backend_factory is not None else SimArm(HOME, self.mode, self.period))
         self.q = self.backend.read()
         self.holding = False
         # Steps to run, as (phase, start pose, goal pose, duration); the first one is running.
@@ -190,9 +194,15 @@ class ControllerNode(LifecycleNode):
         self.step_start = time.monotonic()
         self.publish_status()
 
+    def backend_ready(self):
+        return getattr(self.backend, "ready", True)
+
     def on_move(self, request, response):
         if self.timer is None:
             response.message = "controller inactive"
+            return response
+        if not self.backend_ready():
+            response.message = "waiting for joint feedback"
             return response
         if self.steps:
             response.message = "busy: finishing the current move"
@@ -212,6 +222,8 @@ class ControllerNode(LifecycleNode):
     def start_pick_place(self, request):
         if self.timer is None:
             return "controller inactive"
+        if not self.backend_ready():
+            return "waiting for joint feedback"
         if self.steps:
             return "busy: finishing the current move"
         # Neither point is projected: picking at the wrong spot is worse than not picking.
@@ -230,7 +242,7 @@ class ControllerNode(LifecycleNode):
         return CancelResponse.ACCEPT
 
     def on_goal(self, _request):
-        return GoalResponse.ACCEPT if self.timer is not None else GoalResponse.REJECT
+        return GoalResponse.ACCEPT if self.timer is not None and self.backend_ready() else GoalResponse.REJECT
 
     async def execute_pick_place(self, goal_handle):
         if goal_handle.is_cancel_requested:
@@ -276,6 +288,8 @@ class ControllerNode(LifecycleNode):
                     f"mean abs {1000 * self.jitter_total / self.jitter_count:.2f} ms, "
                     f"max {1000 * self.jitter_max:.2f} ms")
                 self.jitter_start = None
+        if not self.backend_ready():
+            return
         previous_q = self.q
         if self.mode == "velocity":
             self.q = self.backend.read()
@@ -305,10 +319,12 @@ class ControllerNode(LifecycleNode):
             else:
                 self.backend.command(command)
                 self.q = self.backend.read()
-            arrived = max(abs(a - b) for a, b in zip(self.q, goal)) <= JOINT_TOLERANCE
-            if (self.mode == "velocity" and phase == "moving" and s == 1.0 and not arrived
-                    and now - self.step_start > duration + 1.0):
-                self.backend.command([0.0] * len(self.q))
+            arrived = max(abs(a - b) for a, b in zip(self.q, goal)) <= self.joint_tol
+            settle = 1.0 if self.mode == "velocity" else 4.0
+            if (phase == "moving" and s == 1.0 and not arrived
+                    and now - self.step_start > duration + settle):
+                if self.mode == "velocity":
+                    self.backend.command([0.0] * len(self.q))
                 self.steps.clear()
                 self.status_pub.publish(ArmStatus(phase="failed", holding=self.holding, mode=self.mode))
                 self.get_logger().error("move failed: joint goal not reached")
@@ -343,9 +359,9 @@ class ControllerNode(LifecycleNode):
             self.action_goal.publish_feedback(PickPlaceAction.Feedback(phase=self.steps[0][0]))
 
 
-def main(args=None):
+def main(args=None, backend_factory=None):
     rclpy.init(args=args)
-    node = ControllerNode()
+    node = ControllerNode(backend_factory=backend_factory)
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

@@ -1,0 +1,176 @@
+<?xml version="1.0"?>
+<sdf version="1.8">
+  <!-- Planar arm standing in the X-Z vertical plane (Z-up), matching planar_arm.py FK. -->
+  <model name="planar_arm">
+    <self_collide>false</self_collide>
+
+    <!-- Sturdy cylindrical base fixed to the ground -->
+    <link name="base">
+      <inertial>
+        <mass>20</mass>
+        <inertia><ixx>0.2</ixx><iyy>0.2</iyy><izz>0.2</izz></inertia>
+      </inertial>
+      <visual name="base_visual">
+        <pose>0 0 0.1 0 0 0</pose>
+        <geometry><cylinder><radius>0.35</radius><length>0.2</length></cylinder></geometry>
+        <material><diffuse>0.25 0.25 0.28 1</diffuse></material>
+      </visual>
+      <collision name="base_collision">
+        <pose>0 0 0.1 0 0 0</pose>
+        <geometry><cylinder><radius>0.35</radius><length>0.2</length></cylinder></geometry>
+      </collision>
+    </link>
+    <joint name="base_fixed" type="fixed">
+      <parent>world</parent>
+      <child>base</child>
+    </joint>
+
+    <!-- Link 1 (length = 3.0 m, mass = 2 kg) -->
+    <link name="link1">
+      <pose>0 0 0.2 0 0 0</pose>
+      <inertial>
+        <pose>1.5 0 0 0 0 0</pose>
+        <mass>2</mass>
+        <inertia><ixx>0.01</ixx><iyy>1.5</iyy><izz>1.5</izz></inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>1.5 0 0 0 0 0</pose>
+        <geometry><box><size>3.0 0.12 0.18</size></box></geometry>
+        <material><diffuse>0.15 0.4 0.9 1</diffuse></material>
+      </visual>
+      <visual name="pivot_visual">
+        <pose>0 0 0 1.57079632679 0 0</pose>
+        <geometry><cylinder><radius>0.12</radius><length>0.16</length></cylinder></geometry>
+        <material><diffuse>0.12 0.3 0.7 1</diffuse></material>
+      </visual>
+      <collision name="collision">
+        <pose>1.5 0 0 0 0 0</pose>
+        <geometry><box><size>3.0 0.12 0.18</size></box></geometry>
+      </collision>
+    </link>
+
+    <!-- Link 2 (length = 2.0 m, mass = 1.5 kg) -->
+    <link name="link2">
+      <pose>3 0 0.2 0 0 0</pose>
+      <inertial>
+        <pose>1 0 0 0 0 0</pose>
+        <mass>1.5</mass>
+        <inertia><ixx>0.01</ixx><iyy>0.5</iyy><izz>0.5</izz></inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>1 0 0 0 0 0</pose>
+        <geometry><box><size>2.0 0.12 0.16</size></box></geometry>
+        <material><diffuse>0.95 0.45 0.1 1</diffuse></material>
+      </visual>
+      <visual name="pivot_visual">
+        <pose>0 0 0 1.57079632679 0 0</pose>
+        <geometry><cylinder><radius>0.10</radius><length>0.15</length></cylinder></geometry>
+        <material><diffuse>0.8 0.35 0.08 1</diffuse></material>
+      </visual>
+      <collision name="collision">
+        <pose>1 0 0 0 0 0</pose>
+        <geometry><box><size>2.0 0.12 0.16</size></box></geometry>
+      </collision>
+    </link>
+
+    <!-- Link 3 (length = 1.5 m, mass = 1 kg) -->
+    <link name="link3">
+      <pose>5 0 0.2 0 0 0</pose>
+      <inertial>
+        <pose>0.75 0 0 0 0 0</pose>
+        <mass>1</mass>
+        <inertia><ixx>0.01</ixx><iyy>0.2</iyy><izz>0.2</izz></inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0.75 0 0 0 0 0</pose>
+        <geometry><box><size>1.5 0.12 0.14</size></box></geometry>
+        <material><diffuse>0.1 0.65 0.35 1</diffuse></material>
+      </visual>
+      <visual name="pivot_visual">
+        <pose>0 0 0 1.57079632679 0 0</pose>
+        <geometry><cylinder><radius>0.09</radius><length>0.14</length></cylinder></geometry>
+        <material><diffuse>0.08 0.5 0.28 1</diffuse></material>
+      </visual>
+      <visual name="tool_visual">
+        <pose>1.5 0 0 0 0 0</pose>
+        <geometry><sphere><radius>0.08</radius></sphere></geometry>
+        <material><diffuse>0.9 0.2 0.2 1</diffuse></material>
+      </visual>
+      <collision name="collision">
+        <pose>0.75 0 0 0 0 0</pose>
+        <geometry><box><size>1.5 0.12 0.14</size></box></geometry>
+      </collision>
+    </link>
+
+    <!-- Revolute joints rotating in the vertical X-Z plane around -Y -->
+    <joint name="joint1" type="revolute">
+      <parent>base</parent>
+      <child>link1</child>
+      <axis>
+        <xyz>0 -1 0</xyz>
+        <limit><lower>0</lower><upper>3.14159265359</upper><effort>2000</effort><velocity>3</velocity></limit>
+        <dynamics><damping>2.0</damping><friction>0.1</friction></dynamics>
+      </axis>
+    </joint>
+    <joint name="joint2" type="revolute">
+      <parent>link1</parent>
+      <child>link2</child>
+      <axis>
+        <xyz>0 -1 0</xyz>
+        <limit><lower>-2.09439510239</lower><upper>2.09439510239</upper><effort>1000</effort><velocity>3</velocity></limit>
+        <dynamics><damping>1.5</damping><friction>0.1</friction></dynamics>
+      </axis>
+    </joint>
+    <joint name="joint3" type="revolute">
+      <parent>link2</parent>
+      <child>link3</child>
+      <axis>
+        <xyz>0 -1 0</xyz>
+        <limit><lower>-2.09439510239</lower><upper>2.09439510239</upper><effort>500</effort><velocity>3</velocity></limit>
+        <dynamics><damping>1.0</damping><friction>0.05</friction></dynamics>
+      </axis>
+    </joint>
+
+    <plugin filename="gz-sim-joint-position-controller-system"
+            name="gz::sim::systems::JointPositionController">
+      <joint_name>joint1</joint_name>
+      <topic>/planar_arm/joint1/cmd_pos</topic>
+      <p_gain>20000</p_gain>
+      <i_gain>500</i_gain>
+      <d_gain>600</d_gain>
+      <i_max>500</i_max>
+      <i_min>-500</i_min>
+      <cmd_max>2000</cmd_max>
+      <cmd_min>-2000</cmd_min>
+      <initial_position>1.57079632679</initial_position>
+    </plugin>
+    <plugin filename="gz-sim-joint-position-controller-system"
+            name="gz::sim::systems::JointPositionController">
+      <joint_name>joint2</joint_name>
+      <topic>/planar_arm/joint2/cmd_pos</topic>
+      <p_gain>12000</p_gain>
+      <i_gain>300</i_gain>
+      <d_gain>400</d_gain>
+      <i_max>300</i_max>
+      <i_min>-300</i_min>
+      <cmd_max>1000</cmd_max>
+      <cmd_min>-1000</cmd_min>
+    </plugin>
+    <plugin filename="gz-sim-joint-position-controller-system"
+            name="gz::sim::systems::JointPositionController">
+      <joint_name>joint3</joint_name>
+      <topic>/planar_arm/joint3/cmd_pos</topic>
+      <p_gain>6000</p_gain>
+      <i_gain>150</i_gain>
+      <d_gain>200</d_gain>
+      <i_max>150</i_max>
+      <i_min>-150</i_min>
+      <cmd_max>500</cmd_max>
+      <cmd_min>-500</cmd_min>
+    </plugin>
+    <plugin filename="gz-sim-joint-state-publisher-system"
+            name="gz::sim::systems::JointStatePublisher">
+      <topic>/planar_arm/joint_state</topic>
+    </plugin>
+  </model>
+</sdf>

@@ -20,6 +20,14 @@ To run velocity mode instead:
 ros2 launch planar_arm_control bringup.launch.py control_mode:=velocity
 ```
 
+## Gazebo simulation
+
+To launch the arm in Gazebo Sim (ros_gz) with physical dynamics, floor mount, and live GUI mirroring:
+
+```bash
+ros2 launch planar_arm_gazebo gazebo.launch.py
+```
+
 ## Check
 
 The GUI starts with the assignment targets filled in. **Move** sends `(7, 3)`, which is out of reach. The controller moves to about `(5.97, 2.56)` and reports that point in the reply.

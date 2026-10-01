@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>planar_arm_gazebo</name>
+  <version>0.1.0</version>
+  <description>Gazebo Sim (ros_gz) backend for the planar arm controller.</description>
+  <maintainer email="mitanshug2004@gmail.com">Mitanshu Goel</maintainer>
+  <license>Proprietary — for evaluation use only</license>
+
+  <exec_depend>planar_arm_control</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>ros_gz_sim</exec_depend>
+  <exec_depend>ros_gz_bridge</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
