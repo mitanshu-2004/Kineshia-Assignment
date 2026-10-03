@@ -1,10 +1,4 @@
-"""
-bringup.launch.py  —  STARTER STUB.
-
-Launch the controller node and the GUI node together. Fill in the nodes once
-you have implemented them, and expose any parameters you add (publish rate,
-control mode, trajectory duration, etc.) here.
-"""
+"""Start the controller (with its simulated arm) and the GUI."""
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument

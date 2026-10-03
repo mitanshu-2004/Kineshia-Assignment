@@ -2,7 +2,7 @@ import time
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64
 
-JOINTS = ("joint1", "joint2", "joint3")
+from planar_arm_control.controller_node import JOINTS
 
 
 class GazeboArm:

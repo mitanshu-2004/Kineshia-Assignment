@@ -1,4 +1,4 @@
-# idle, moving, picking, placing or failed
+# homing, idle, moving, picking, placing, failed or inactive
 string phase
 bool holding
 string mode

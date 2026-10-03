@@ -14,13 +14,12 @@ from sensor_msgs.msg import JointState
 from PyQt5 import QtCore, QtWidgets
 import pyqtgraph as pg
 
+from planar_arm_control.controller_node import LINK_LENGTHS, REACH
 from planar_arm_control.planar_arm import PlanarArm
 from planar_arm_msgs.action import PickPlace as PickPlaceAction
 from planar_arm_msgs.msg import ArmStatus
 from planar_arm_msgs.srv import MoveToTarget
 
-LINK_LENGTHS = [3.0, 2.0, 1.5]
-REACH = sum(LINK_LENGTHS)
 HISTORY_S = 10.0  # seconds of joint angles in the plot
 STALE_S = 0.5  # no joint state for this long means the controller is gone
 
@@ -57,7 +56,7 @@ class Window(QtWidgets.QWidget):
         self.joints.connect(self.on_joints)
         self.status.connect(self.on_status)
         self.reply.connect(self.on_reply)
-        self.action_update.connect(self.on_action_update)
+        self.action_update.connect(self.show_reply)
         self.goal_ready.connect(self.on_goal_ready)
         node.create_subscription(JointState, "joint_states", lambda msg: self.joints.emit(
             msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9, list(msg.position), list(msg.velocity)), 10)
@@ -222,8 +221,7 @@ class Window(QtWidgets.QWidget):
         self.status_label.setText(f"{phase}   holding: {'yes' if holding else 'no'}")
         self.mode_label.setText(mode)
         if self.move_completion and phase in ("idle", "failed", "inactive"):
-            self.reply_label.setText(self.move_completion if phase == "idle" else f"move {phase}")
-            self.reply_label.setStyleSheet("" if phase == "idle" else "color: red")
+            self.show_reply(self.move_completion if phase == "idle" else f"move {phase}", phase == "idle")
             self.move_completion = None
         self.check_health()
 
@@ -233,8 +231,7 @@ class Window(QtWidgets.QWidget):
         if self.action_pending and (time.monotonic() - self.action_start_time > 4.0 or not fresh):
             self.action_pending = False
             self.action_goal = None
-            self.reply_label.setText("action timed out or controller unavailable")
-            self.reply_label.setStyleSheet("color: red")
+            self.show_reply("action timed out or controller unavailable", False)
         busy = (fresh and not self.idle) or self.action_pending
         for box in (self.move_x, self.move_y, self.pick_x, self.pick_y, self.place_x, self.place_y):
             box.setEnabled(not busy)
@@ -316,16 +313,16 @@ class Window(QtWidgets.QWidget):
 
     def on_reply(self, reply):
         response, x, y = reply
-        self.reply_label.setText(response.message)
-        self.reply_label.setStyleSheet("" if response.accepted else "color: red")
+        self.show_reply(response.message, response.accepted)
         self.move_completion = response.message.replace("moving to", "moved to") if response.accepted else None
         distance = math.hypot(x, y)
-        if response.accepted and y >= 0 and distance > REACH:
+        if response.accepted and distance > REACH:
+            # Scaled back onto the reach circle, as the library projects it.
             self.projected_mark.setData([x * REACH / distance], [y * REACH / distance])
 
-    def on_action_update(self, message, success):
+    def show_reply(self, message, ok):
         self.reply_label.setText(message)
-        self.reply_label.setStyleSheet("" if success else "color: red")
+        self.reply_label.setStyleSheet("" if ok else "color: red")
 
 
 def main(args=None):
