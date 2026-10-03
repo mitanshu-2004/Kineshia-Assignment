@@ -1,30 +1,4 @@
 #!/usr/bin/env python3
-"""
-controller_node.py  —  STARTER STUB. This is YOUR work to implement.
-
-Goal: a ROS 2 node that owns the arm state, accepts a target, plans a
-time-parameterized joint trajectory, and streams joint states as it executes.
-
-Suggested interface (you may adapt, but document any changes in your README):
-    - Publishes:   /joint_states   (sensor_msgs/JointState)   at a fixed rate
-    - Service:     /move_to_target (your choice of srv; e.g. a Point target)
-      OR Topic:    /target_pose    (geometry_msgs/PointStamped)
-    - Parameters:  publish_rate_hz, control_mode, trajectory_duration, ...
-
-Core requirements (see the task brief):
-    1. Run IK on the incoming target (use PlanarArm.inverse_kinematics).
-    2. Generate a smooth joint-space trajectory from the current q to the goal
-       q (trapezoidal or quintic — your choice; explain it).
-    3. Step along the trajectory in a timer callback and publish JointState.
-    4. Respect joint limits and the ground constraint.
-    5. Design the command path so a hardware backend (e.g. Dynamixel) could be
-       swapped in later without rewriting the planner.
-
-Stretch (optional, rewarded): velocity / current control modes, a PID
-trajectory-tracking loop with an error signal, a ROS 2 action for the full
-pick-and-place with feedback/cancel.
-"""
-
 import math
 import signal
 import threading
@@ -35,6 +9,7 @@ from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.lifecycle import LifecycleNode, TransitionCallbackReturn
 from rclpy.qos import DurabilityPolicy, QoSProfile
+from rclpy.signals import SignalHandlerOptions
 from rclpy.task import Future
 from sensor_msgs.msg import JointState
 
@@ -55,15 +30,19 @@ GOAL_TOLERANCE = 1e-3  # the IK answer must put the tool within 1 mm of the targ
 JOINT_TOLERANCE = 1e-3  # measured pose must reach the commanded goal before the next move
 VELOCITY_GAIN = 8.0  # position correction in velocity mode, 1/s
 JITTER_SAMPLE_S = 10.0
+SETTLE_SPEED = math.radians(0.1)  # measured joint speed before a move completes
+SETTLE_TIME = 0.3
 
 
 class SimArm:
-    def __init__(self, q, mode="position", period=0.02):
+    def __init__(self, q, clock, mode="position", period=0.02):
         self.q = list(q)
+        self.clock = clock
         self.mode = mode
         self.period = period
         self.velocity = [0.0] * len(q)
-        self.last_update = time.monotonic()
+        self.last_update = self.last_state_time = time.monotonic()
+        self.last_state_q = list(q)
 
     def advance(self):
         now = time.monotonic()
@@ -86,6 +65,14 @@ class SimArm:
         self.advance()
         return list(self.q)
 
+    def read_state(self):
+        q = self.read()
+        now = time.monotonic()
+        dt = now - self.last_state_time
+        velocity = [(a - b) / dt for a, b in zip(q, self.last_state_q)] if dt > 0 else [0.0] * len(q)
+        self.last_state_q, self.last_state_time = q, now
+        return q, velocity, self.clock.now().to_msg()
+
 
 class ControllerNode(LifecycleNode):
     def __init__(self, backend=None, backend_factory=None):
@@ -103,12 +90,13 @@ class ControllerNode(LifecycleNode):
         if self.joint_tol <= 0:
             raise ValueError("joint_tolerance must be positive")
         self.backend = backend if backend is not None else (
-            backend_factory(self) if backend_factory is not None else SimArm(HOME, self.mode, self.period))
+            backend_factory(self) if backend_factory is not None else SimArm(HOME, self.get_clock(), self.mode, self.period))
         self.q = self.backend.read()
         self.holding = False
         # Steps to run, as (phase, start pose, goal pose, duration); the first one is running.
         self.steps = []
         self.step_start = 0.0
+        self.settled_since = None
         self.action_goal = None
         self.action_done = None
         self.joint_pub = None
@@ -131,7 +119,9 @@ class ControllerNode(LifecycleNode):
         if result != TransitionCallbackReturn.SUCCESS:
             return result
         self.q = self.backend.read()
-        self.last_tick = self.jitter_start = time.monotonic()
+        self.last_feedback_stamp = None
+        self.waiting_for_backend = not self.backend_ready()
+        self.last_tick = self.jitter_start = self.clock_now()
         self.jitter_count = 0
         self.jitter_total = self.jitter_max = 0.0
         self.timer = self.create_timer(self.period, self.tick)
@@ -146,6 +136,7 @@ class ControllerNode(LifecycleNode):
             self.backend.command([0.0] * len(self.q))
         self.q = self.backend.read()
         self.steps.clear()
+        self.settled_since = None
         if self.action_done:
             self.finish_action("inactive")
 
@@ -193,8 +184,12 @@ class ControllerNode(LifecycleNode):
 
     def run(self, steps):
         self.steps = steps
-        self.step_start = time.monotonic()
+        self.step_start = self.clock_now()
+        self.settled_since = None
         self.publish_status()
+
+    def clock_now(self):
+        return self.get_clock().now().nanoseconds * 1e-9
 
     def backend_ready(self):
         return getattr(self.backend, "ready", True)
@@ -281,7 +276,7 @@ class ControllerNode(LifecycleNode):
             else:
                 goal_handle.succeed()
             message = {"succeeded": "pick/place complete", "canceled": "pick/place canceled",
-                       "failed": "joint goal not reached", "inactive": "controller deactivated"}.get(
+                       "failed": "joint goal not settled", "inactive": "controller deactivated"}.get(
                            outcome, "operation finished")
             return PickPlaceAction.Result(success=outcome == "succeeded", message=message)
 
@@ -294,8 +289,9 @@ class ControllerNode(LifecycleNode):
                 done.set_result(outcome)
 
     def tick(self):
+        state = None
         with self._lock:
-            now = time.monotonic()
+            now = self.clock_now()
             dt = now - self.last_tick
             self.last_tick = now
             if self.jitter_start is not None:
@@ -311,7 +307,9 @@ class ControllerNode(LifecycleNode):
                     self.jitter_start = None
             if not self.backend_ready():
                 return
-            previous_q = self.q
+            if self.waiting_for_backend:
+                self.waiting_for_backend = False
+                self.publish_status()
             if self.mode == "velocity":
                 self.q = self.backend.read()
             if self.steps and self.action_goal and self.action_goal.is_cancel_requested:
@@ -343,24 +341,38 @@ class ControllerNode(LifecycleNode):
                 else:
                     self.backend.command(command)
                     self.q = self.backend.read()
+                state = self.backend.read_state()
+                self.q, velocity, stamp = state
+                feedback_stamp = (stamp.sec, stamp.nanosec)
+                fresh_feedback = feedback_stamp != self.last_feedback_stamp
+                self.last_feedback_stamp = feedback_stamp
+                speed = max(abs(v) for v in velocity)
                 arrived = max(abs(a - b) for a, b in zip(self.q, goal)) <= self.joint_tol
+                if phase == "moving" and s == 1.0 and arrived and fresh_feedback and speed <= SETTLE_SPEED:
+                    if self.settled_since is None:
+                        self.settled_since = now
+                else:
+                    self.settled_since = None
+                settled = self.settled_since is not None and now - self.settled_since >= SETTLE_TIME
                 settle = 1.0 if self.mode == "velocity" else 4.0
-                if (phase == "moving" and s == 1.0 and not arrived
+                if (phase == "moving" and s == 1.0 and not settled
                         and now - self.step_start > duration + settle):
                     if self.mode == "velocity":
                         self.backend.command([0.0] * len(self.q))
                     self.steps.clear()
+                    self.settled_since = None
                     self.status_pub.publish(ArmStatus(phase="failed", holding=self.holding, mode=self.mode))
-                    self.get_logger().error("move failed: joint goal not reached")
+                    self.get_logger().error("move failed: joint goal not settled")
                     if self.action_done:
                         self.finish_action("failed")
-                elif s == 1.0 and (phase != "moving" or arrived):
+                elif s == 1.0 and (phase != "moving" or settled):
                     if self.mode == "velocity":
                         self.backend.command([0.0] * len(self.q))
                     if phase != "moving":
                         self.holding = phase == "picking"
                     self.steps.pop(0)
-                    self.step_start = time.monotonic()
+                    self.step_start = self.clock_now()
+                    self.settled_since = None
                     self.publish_status()
                     if not self.steps and self.action_done:
                         self.finish_action("succeeded")
@@ -369,34 +381,40 @@ class ControllerNode(LifecycleNode):
                     self.backend.command([0.0] * len(self.q))
                 else:
                     self.q = self.backend.read()
+            if state is None:
+                state = self.backend.read_state()
+            self.last_feedback_stamp = (state[2].sec, state[2].nanosec)
+        self.q, velocity, stamp = state
         msg = JointState()
-        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.stamp = stamp
         msg.name = ["joint1", "joint2", "joint3"]
         msg.position = self.q
-        msg.velocity = [(q - old) / dt for q, old in zip(self.q, previous_q)] if dt > 0 else [0.0] * len(self.q)
+        msg.velocity = velocity
         self.joint_pub.publish(msg)
 
     def publish_status(self):
         if self.status_pub is not None:
-            self.status_pub.publish(ArmStatus(phase=self.steps[0][0] if self.steps else "idle",
-                                              holding=self.holding, mode=self.mode))
+            phase = self.steps[0][0] if self.steps else ("idle" if self.backend_ready() else "homing")
+            self.status_pub.publish(ArmStatus(phase=phase, holding=self.holding, mode=self.mode))
         if self.steps and self.action_goal:
             self.action_goal.publish_feedback(PickPlaceAction.Feedback(phase=self.steps[0][0]))
 
 
 def main(args=None, backend_factory=None):
-    rclpy.init(args=args)
+    rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
     node = ControllerNode(backend_factory=backend_factory)
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        # Under ros2 launch a second Ctrl-C follows the first; it must not interrupt cleanup.
-        signal.signal(signal.SIGINT, signal.SIG_IGN)
-        node.stop()
-        node.destroy_node()
-        rclpy.try_shutdown()
+    # Ctrl-C only sets a flag: a KeyboardInterrupt can land inside rclpy while it takes a message.
+    stopping = []
+    signal.signal(signal.SIGINT, lambda *_: stopping.append(True))
+    executor = rclpy.get_global_executor()
+    executor.add_node(node)
+    while not stopping:
+        executor.spin_once(timeout_sec=0.1)
+    # Under ros2 launch a second Ctrl-C follows the first; it must not kill the process while it exits.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    node.stop()
+    node.destroy_node()
+    rclpy.try_shutdown()
 
 
 if __name__ == "__main__":

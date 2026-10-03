@@ -7,7 +7,7 @@ from .gazebo_arm import GazeboArm
 
 def main():
     def backend(node):
-        return GazeboArm(node, HOME, mode=node.mode, period=node.period)
+        return GazeboArm(node, HOME, mode=node.mode)
 
     run_controller(backend_factory=backend)
 

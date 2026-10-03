@@ -47,7 +47,7 @@ def generate_launch_description():
                 namespace="",
                 autostart=True,
                 output="screen",
-                parameters=[{"control_mode": "position", "joint_tolerance": 0.02}],
+                parameters=[{"control_mode": "velocity", "joint_tolerance": 0.02, "use_sim_time": True}],
             ),
             Node(
                 package="planar_arm_control",

@@ -1,15 +1,15 @@
-- ros_topic_name: /gazebo/joint1/cmd_pos
-  gz_topic_name: /planar_arm/joint1/cmd_pos
+- ros_topic_name: /gazebo/joint1/cmd_vel
+  gz_topic_name: /planar_arm/joint1/cmd_vel
   ros_type_name: std_msgs/msg/Float64
   gz_type_name: gz.msgs.Double
   direction: ROS_TO_GZ
-- ros_topic_name: /gazebo/joint2/cmd_pos
-  gz_topic_name: /planar_arm/joint2/cmd_pos
+- ros_topic_name: /gazebo/joint2/cmd_vel
+  gz_topic_name: /planar_arm/joint2/cmd_vel
   ros_type_name: std_msgs/msg/Float64
   gz_type_name: gz.msgs.Double
   direction: ROS_TO_GZ
-- ros_topic_name: /gazebo/joint3/cmd_pos
-  gz_topic_name: /planar_arm/joint3/cmd_pos
+- ros_topic_name: /gazebo/joint3/cmd_vel
+  gz_topic_name: /planar_arm/joint3/cmd_vel
   ros_type_name: std_msgs/msg/Float64
   gz_type_name: gz.msgs.Double
   direction: ROS_TO_GZ
@@ -17,4 +17,9 @@
   gz_topic_name: /planar_arm/joint_state
   ros_type_name: sensor_msgs/msg/JointState
   gz_type_name: gz.msgs.Model
+  direction: GZ_TO_ROS
+- ros_topic_name: /clock
+  gz_topic_name: /clock
+  ros_type_name: rosgraph_msgs/msg/Clock
+  gz_type_name: gz.msgs.Clock
   direction: GZ_TO_ROS

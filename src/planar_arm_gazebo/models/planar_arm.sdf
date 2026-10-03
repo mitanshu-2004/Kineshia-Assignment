@@ -103,12 +103,14 @@
     </link>
 
     <!-- Revolute joints rotating in the vertical X-Z plane around -Y -->
+    <!-- Small startup clearance avoids Gazebo velocity control locking at the lower stop;
+         the planner still enforces joint1 >= 0. -->
     <joint name="joint1" type="revolute">
       <parent>base</parent>
       <child>link1</child>
       <axis>
         <xyz>0 -1 0</xyz>
-        <limit><lower>0</lower><upper>3.14159265359</upper><effort>2000</effort><velocity>3</velocity></limit>
+        <limit><lower>-0.01</lower><upper>3.14159265359</upper><effort>2000</effort><velocity>3</velocity></limit>
         <dynamics><damping>2.0</damping><friction>0.1</friction></dynamics>
       </axis>
     </joint>
@@ -131,42 +133,23 @@
       </axis>
     </joint>
 
-    <plugin filename="gz-sim-joint-position-controller-system"
-            name="gz::sim::systems::JointPositionController">
+    <plugin filename="gz-sim-joint-controller-system"
+            name="gz::sim::systems::JointController">
       <joint_name>joint1</joint_name>
-      <topic>/planar_arm/joint1/cmd_pos</topic>
-      <p_gain>20000</p_gain>
-      <i_gain>500</i_gain>
-      <d_gain>600</d_gain>
-      <i_max>500</i_max>
-      <i_min>-500</i_min>
-      <cmd_max>2000</cmd_max>
-      <cmd_min>-2000</cmd_min>
-      <initial_position>1.57079632679</initial_position>
+      <topic>/planar_arm/joint1/cmd_vel</topic>
+      <initial_velocity>0</initial_velocity>
     </plugin>
-    <plugin filename="gz-sim-joint-position-controller-system"
-            name="gz::sim::systems::JointPositionController">
+    <plugin filename="gz-sim-joint-controller-system"
+            name="gz::sim::systems::JointController">
       <joint_name>joint2</joint_name>
-      <topic>/planar_arm/joint2/cmd_pos</topic>
-      <p_gain>12000</p_gain>
-      <i_gain>300</i_gain>
-      <d_gain>400</d_gain>
-      <i_max>300</i_max>
-      <i_min>-300</i_min>
-      <cmd_max>1000</cmd_max>
-      <cmd_min>-1000</cmd_min>
+      <topic>/planar_arm/joint2/cmd_vel</topic>
+      <initial_velocity>0</initial_velocity>
     </plugin>
-    <plugin filename="gz-sim-joint-position-controller-system"
-            name="gz::sim::systems::JointPositionController">
+    <plugin filename="gz-sim-joint-controller-system"
+            name="gz::sim::systems::JointController">
       <joint_name>joint3</joint_name>
-      <topic>/planar_arm/joint3/cmd_pos</topic>
-      <p_gain>6000</p_gain>
-      <i_gain>150</i_gain>
-      <d_gain>200</d_gain>
-      <i_max>150</i_max>
-      <i_min>-150</i_min>
-      <cmd_max>500</cmd_max>
-      <cmd_min>-500</cmd_min>
+      <topic>/planar_arm/joint3/cmd_vel</topic>
+      <initial_velocity>0</initial_velocity>
     </plugin>
     <plugin filename="gz-sim-joint-state-publisher-system"
             name="gz::sim::systems::JointStatePublisher">

@@ -1,26 +1,4 @@
 #!/usr/bin/env python3
-"""
-gui_node.py  —  STARTER STUB. This is YOUR work to implement.
-
-Goal: a PyQt5 + PyQtGraph node that is a live client of the controller.
-
-Suggested behaviour (adapt as you like, document changes):
-    - Subscribes to /joint_states and renders the arm live (links + joints).
-    - Plots joint angles (and, if you do PID tracking, tracking error) over
-      time with PyQtGraph.
-    - Lets the operator enter pick and place targets and send them to the
-      controller (service call or topic publish).
-    - Shows telemetry: end-effector position, current mode, status.
-
-THE KEY CHALLENGE: the ROS 2 executor and the Qt event loop must run together
-without either one blocking the other. Spinning ROS in a background thread or
-driving rclpy.spin_once from a QTimer are both acceptable — your handling of
-this is a graded signal (multithreading / timer synchronisation).
-
-You may reuse the look and feel of a standard PyQtGraph arm plot; the point of
-this task is the ROS 2 integration, not pixel-perfect styling.
-"""
-
 import math
 import signal
 import threading
@@ -115,6 +93,7 @@ class Window(QtWidgets.QWidget):
                                         symbolPen=pg.mkPen((40, 160, 60), width=2), symbolBrush=None)
         angles = pg.PlotWidget(background="w")
         speeds = pg.PlotWidget(background="w")
+        speeds.setTitle("Joint velocity")
         for plot, label, unit, limits in ((angles, "angle", "deg", (-120, 180)),
                                           (speeds, "velocity", "deg/s", (-70, 70))):
             plot.setLabel("left", label, units=unit)
@@ -203,6 +182,8 @@ class Window(QtWidgets.QWidget):
         timer.start(200)
 
     def on_joints(self, stamp, q, velocity):
+        if self.history and stamp == self.history[-1][0]:
+            return  # The controller repeated the latest Gazebo sample; no new measurement.
         self.last_data = time.monotonic()
         # A gap or backward reset in the controller's timestamps means it stopped or restarted:
         # start the plot afresh instead of joining across the gap.
