@@ -1,8 +1,11 @@
 # Design note
 
-```
-GUI ── target ──► controller ── command ──► SimArm or GazeboArm
-    ◄── joint angles, status ──         ◄── angles ──
+```mermaid
+flowchart LR
+    GUI -- target --> Controller
+    Controller -- joint angles, status --> GUI
+    Controller -- command --> Arm["SimArm or GazeboArm"]
+    Arm -- angles --> Controller
 ```
 
 ## Architecture
