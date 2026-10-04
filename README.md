@@ -1,45 +1,61 @@
-# ROS 2 planar arm
+# Planar arm: ROS 2 controller and GUI
 
-Controller and PyQt5 GUI for the supplied three-joint arm. `planar_arm.py` is unchanged.
+Controller and GUI for the supplied three-joint arm. `planar_arm.py` is unchanged.
 
-## Run
+[Design note](DESIGN_NOTE.md) · [Sim to hardware](SIM_TO_HARDWARE.md)
 
-Tested on Ubuntu 24.04 with ROS 2 Jazzy.
+## What I built
+
+- **Controller:** checks each target, plans a smooth joint move, publishes `/joint_states` at 50 Hz.
+- **GUI:** draws the arm, plots joint angles and speeds, shows the tool position, sends targets.
+- **Pick and place:** move → pick → move → place.
+
+Stretch goals:
+
+- **Velocity mode** (`control_mode:=velocity`).
+- **Pick-and-place action** with feedback and cancel.
+- **Gazebo**, driven by the same controller through `ros_gz_bridge` (velocity mode).
+- **Lifecycle node** and **timer-jitter log**.
+
+## Build
+
+Ubuntu 24.04, ROS 2 Jazzy, from the repository root:
 
 ```bash
-sudo apt install python3-colcon-common-extensions python3-numpy python3-pyqt5 python3-pyqtgraph
+sudo apt install python3-colcon-common-extensions python3-numpy python3-pyqt5 python3-pyqtgraph ros-jazzy-ros-gz
 source /opt/ros/jazzy/setup.bash
 colcon build
 source install/setup.bash
-ros2 launch planar_arm_control bringup.launch.py
 ```
 
-To run velocity mode instead:
+## Run
+
+Each command opens the GUI.
 
 ```bash
-ros2 launch planar_arm_control bringup.launch.py control_mode:=velocity
+ros2 launch planar_arm_control bringup.launch.py                        # position mode
+ros2 launch planar_arm_control bringup.launch.py control_mode:=velocity # velocity mode
+ros2 launch planar_arm_gazebo gazebo.launch.py                          # Gazebo
 ```
 
-## Gazebo simulation
+## Try it
 
-To launch the arm in Gazebo Sim (ros_gz) with physical dynamics, floor mount, and live GUI mirroring:
+The GUI opens with the brief's values.
+
+1. **Move** `(7, 3)`: out of reach, so the arm goes to the closest point, `(5.97, 2.56)`.
+2. **Pick & Place** `(4, 2)` → `(-3, 3)`. **Cancel** stops the arm.
+
+Without the GUI:
 
 ```bash
-ros2 launch planar_arm_gazebo gazebo.launch.py
+ros2 service call /move_to_target planar_arm_msgs/srv/MoveToTarget "{x: 7.0, y: 3.0}"
 ```
 
-## Check
+## Interfaces
 
-The GUI starts with the assignment targets filled in. **Move** sends `(7, 3)`, which is out of reach. The controller moves to about `(5.97, 2.56)` and reports that point in the reply.
-
-After the move finishes, **Pick & Place** picks at `(4, 2)` and places at `(-3, 3)`. The orange block follows the tool. Picking and placing are half-second pauses that change the `holding` state; there is no gripper hardware.
-
-## Notes
-
-The controller uses quintic interpolation for smooth starts and stops. It checks joint limits and the ground constraint along each move, then publishes `/joint_states` at 50 Hz. Pick/place rejects unreachable targets; moving to a nearby point would pick or place at the wrong location.
-
-Velocity mode sends the quintic's joint speeds, with a small position correction from the angles read back from the arm. `SimArm` integrates the commanded speed directly; it does not model motor lag. Position mode remains the default.
-
-ROS runs on a background thread and passes updates to Qt through signals. The GUI sends service requests without waiting in the Qt thread.
-
-Joint commands go through `SimArm.command()` and the controller reads joint angles through `SimArm.read()`. A motor driver can use the same two methods without changing the trajectory code. No motor driver is included.
+| Name | What |
+|---|---|
+| `/move_to_target` | service: move to `(x, y)` |
+| `/pick_place` | action: pick and place, with feedback and cancel |
+| `/joint_states` | joint angles and speeds, 50 Hz |
+| `/arm_status` | phase, holding, mode |
