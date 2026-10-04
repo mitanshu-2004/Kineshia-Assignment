@@ -123,7 +123,7 @@ class ControllerNode(LifecycleNode):
         self.q = self.backend.read()
         self.last_feedback_stamp = None
         self.waiting_for_backend = not self.backend_ready()
-        self.last_tick = self.jitter_start = self.clock_now()
+        self.last_tick = self.jitter_start = None  # set on the first tick
         self.jitter_count = 0
         self.jitter_total = self.jitter_max = 0.0
         self.timer = self.create_timer(self.period, self.tick)
@@ -266,6 +266,10 @@ class ControllerNode(LifecycleNode):
 
     def record_jitter(self, now):
         """Log how far the timer strays from its period, once, over the first JITTER_SAMPLE_S."""
+        if self.last_tick is None:
+            # In Gazebo the simulation clock can start after activation, so measure from the first tick.
+            self.last_tick = self.jitter_start = now
+            return
         jitter = abs(now - self.last_tick - self.period)
         self.last_tick = now
         if self.jitter_start is None:
