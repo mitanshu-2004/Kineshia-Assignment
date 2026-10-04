@@ -4,6 +4,9 @@ Controller and GUI for the supplied three-joint arm. `planar_arm.py` is unchange
 
 [Design note](DESIGN_NOTE.md) · [Sim to hardware](SIM_TO_HARDWARE.md)
 
+## Demo
+[demo.webm](https://github.com/user-attachments/assets/25749c24-dfc2-4237-8fb3-1587000c3c5e)
+
 ## What I built
 
 - **Controller:** checks each target, plans a smooth joint move, publishes `/joint_states` at 50 Hz.
