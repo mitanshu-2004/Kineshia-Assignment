@@ -227,15 +227,17 @@ class ControllerNode(LifecycleNode):
         if reason:
             return reason
         # Neither point is projected: picking at the wrong spot is worse than not picking.
-        pick, _, reason = self.plan(request.pick_x, request.pick_y, self.q, allow_projection=False)
-        if pick is None:
-            return "refused: pick " + reason
-        place, _, reason = self.plan(request.place_x, request.place_y, pick, allow_projection=False)
+        # A pick or place is a pause at one pose while the gripper closes or opens.
+        steps, place_from = [], self.q
+        if not self.holding:  # after a cancel mid-carry the block is still held: go straight to placing
+            pick, _, reason = self.plan(request.pick_x, request.pick_y, self.q, allow_projection=False)
+            if pick is None:
+                return "refused: pick " + reason
+            steps, place_from = [self.move_step(self.q, pick), ("picking", pick, pick, GRASP_TIME)], pick
+        place, _, reason = self.plan(request.place_x, request.place_y, place_from, allow_projection=False)
         if place is None:
             return "refused: place " + reason
-        # A pick or place is a pause at one pose while the gripper closes or opens.
-        self.run([self.move_step(self.q, pick), ("picking", pick, pick, GRASP_TIME),
-                  self.move_step(pick, place), ("placing", place, place, GRASP_TIME)])
+        self.run(steps + [self.move_step(place_from, place), ("placing", place, place, GRASP_TIME)])
         return None
 
     async def execute_pick_place(self, goal_handle):
