@@ -1,6 +1,6 @@
 # Moving this task from simulation to hardware
 
-My controller talks to the arm through a backend (`SimArm` or `GazeboArm`). For a real arm I would add a motor backend, for example for Dynamixel servos, and keep the planner, the checks and the GUI. The hard part: a simulated arm is exact and never fails. A real one is neither.
+My controller talks to the arm through a backend (`SimArm` or `GazeboArm`). For a real arm I would add a motor backend, for example for Dynamixel servos, and keep the planner and the checks. The hard part: my `SimArm` is exact and never fails. A real arm is neither.
 
 ## Software
 
@@ -10,8 +10,10 @@ My controller talks to the arm through a backend (`SimArm` or `GazeboArm`). For 
 
 ## Control
 
-**Dynamics.** A real arm has gravity, friction and gear play, so the joints lag and sag. My tolerances were tuned for a perfect simulation. I would tune the gains and tolerances on the real arm at low speed, and log how far the arm is from the plan.
+**Dynamics.** A real arm has gravity, friction and gear play, so the joints lag and sag. My tolerances were tuned in simulation. I would tune the gains and tolerances on the real arm at low speed, and log how far the arm is from the plan.
 
 **Safety margin.** My velocity mode checks limits only one step ahead, but a real arm needs room to slow down, so I would add a margin.
 
+## GUI
 
+I would keep the GUI's "no data" warning and add the commanded and real arm side by side, plus motor temperature and errors.
