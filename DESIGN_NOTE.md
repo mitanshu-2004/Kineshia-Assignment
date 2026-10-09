@@ -20,7 +20,7 @@ flowchart LR
 
 ## Bug in `planar_arm.py`
 
-In the IK, `beta` is calculated but not used for `q2`, so the exact solution only finds poses with joint 3 at 0°. Other targets go to a fallback that skips the limit and ground checks, so the controller checks every answer again. As a result, some reachable targets, like `(2, 1)`, are refused.
+In the IK, `beta` is calculated but not used for `q2`, so the exact solution only finds poses with joint 3 at 0°. Other targets go to a fallback that skips the limit and ground checks, so the controller checks every answer again. As a result, some reachable targets are refused depending on where the arm starts: `(2, 1)` works from home but is refused after **Move** `(7, 3)`.
 
 ## Trade-offs
 
@@ -30,6 +30,6 @@ In the IK, `beta` is calculated but not used for `q2`, so the exact solution onl
 
 ## Next
 
-- Automated tests for the brief's cases.
+- Automated tests for the target checks and pick and place.
 - An I term and a tracking-error plot for velocity mode.
 - A ros2_control interface for real motors.

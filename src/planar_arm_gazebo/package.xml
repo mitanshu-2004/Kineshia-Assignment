@@ -4,7 +4,7 @@
   <version>0.1.0</version>
   <description>Gazebo Sim (ros_gz) backend for the planar arm controller.</description>
   <maintainer email="mitanshug2004@gmail.com">Mitanshu Goel</maintainer>
-  <license>Proprietary — for evaluation use only</license>
+  <license>Apache-2.0</license>
 
   <exec_depend>planar_arm_control</exec_depend>
   <exec_depend>ament_index_python</exec_depend>

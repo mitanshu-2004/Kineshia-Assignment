@@ -18,10 +18,10 @@ setup(
     ],
     install_requires=["setuptools"],
     zip_safe=True,
-    maintainer="Kineshia Robotics",
-    maintainer_email="hr@kineshia.in",
-    description="ROS 2 control + telemetry GUI for a 3-DoF planar manipulator.",
-    license="Proprietary — for evaluation use only",
+    maintainer="Mitanshu Goel",
+    maintainer_email="mitanshug2004@gmail.com",
+    description="ROS 2 controller and telemetry GUI for a 3-DoF planar arm.",
+    license="Apache-2.0",
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [

@@ -1,4 +1,4 @@
-# Moving this task from simulation to hardware
+# Moving from simulation to hardware
 
 My controller talks to the arm through a backend (`SimArm` or `GazeboArm`). For a real arm I would add a motor backend, for example for Dynamixel servos, and keep the planner and the checks. The hard part: my `SimArm` is exact and never fails. A real arm is neither.
 

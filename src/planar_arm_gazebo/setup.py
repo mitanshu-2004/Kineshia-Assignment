@@ -25,7 +25,7 @@ setup(
     maintainer="Mitanshu Goel",
     maintainer_email="mitanshug2004@gmail.com",
     description="Gazebo Sim (ros_gz) backend for the planar arm controller.",
-    license="Proprietary — for evaluation use only",
+    license="Apache-2.0",
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [

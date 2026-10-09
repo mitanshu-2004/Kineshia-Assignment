@@ -3,13 +3,9 @@
 <package format="3">
   <name>planar_arm_control</name>
   <version>0.1.0</version>
-  <description>
-    Kineshia Robotics take-home: ROS 2 control + telemetry GUI for a 3-DoF
-    planar manipulator. Candidate implements the controller and GUI nodes;
-    the kinematics library (planar_arm.py) is provided.
-  </description>
-  <maintainer email="hr@kineshia.in">Kineshia Robotics</maintainer>
-  <license>Proprietary — for evaluation use only</license>
+  <description>ROS 2 controller and telemetry GUI for a 3-DoF planar arm.</description>
+  <maintainer email="mitanshug2004@gmail.com">Mitanshu Goel</maintainer>
+  <license>Apache-2.0</license>
 
   <exec_depend>rclpy</exec_depend>
   <exec_depend>launch</exec_depend>

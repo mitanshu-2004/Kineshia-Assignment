@@ -4,7 +4,7 @@
   <version>0.1.0</version>
   <description>Service, action and message definitions for the planar arm controller and GUI.</description>
   <maintainer email="mitanshug2004@gmail.com">Mitanshu Goel</maintainer>
-  <license>Proprietary — for evaluation use only</license>
+  <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
   <buildtool_depend>rosidl_default_generators</buildtool_depend>
