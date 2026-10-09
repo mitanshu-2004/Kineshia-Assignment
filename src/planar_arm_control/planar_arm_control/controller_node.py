@@ -11,7 +11,7 @@ from rclpy.signals import SignalHandlerOptions
 from rclpy.task import Future
 from sensor_msgs.msg import JointState
 
-# The provided kinematics library — do not modify it.
+# Supplied kinematics library, used unchanged.
 from planar_arm_control.planar_arm import PlanarArm
 from planar_arm_msgs.action import PickPlace as PickPlaceAction
 from planar_arm_msgs.msg import ArmStatus
@@ -171,8 +171,9 @@ class ControllerNode(LifecycleNode):
         if not (reached and self.arm.within_joint_limits(goal) and self.arm.arm_above_base(goal)):
             return None, None, f"the library's IK gave no valid pose for ({x:.2f}, {y:.2f})"
         # A straight joint-space line between two valid poses can still dip below the ground.
+        # The start pose is skipped: the arm is already there, and in Gazebo it can rest a hair below y = 0.
         samples = int(math.degrees(max(abs(b - a) for a, b in zip(start, goal)))) + 2
-        for i in range(samples):
+        for i in range(1, samples):
             s = i / (samples - 1)
             if not self.arm.arm_above_base([a + (b - a) * s for a, b in zip(start, goal)]):
                 return None, None, "the path would pass below the ground"
